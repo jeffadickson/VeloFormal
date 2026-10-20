@@ -13,10 +13,30 @@ ReportGenerator tool, and writes HTML, text, and Cobertura reports to a fresh
 directory under `artifacts/coverage/`. Use `test` instead of `coverage` to omit
 coverage. All development helpers are C#; no Python helper is required.
 
+To simulate the pinned ISC-licensed PicoRV32 UART divider fixture, install
+Icarus Verilog and run:
+
+```console
+dotnet run --project tools/VeloFormal.Build -c Release -- rtl
+```
+
+The helper uses `iverilog` and `vvp` from PATH. Set `IVERILOG` and `VVP` for
+explicit executable paths, and `IVL_ROOT` when the compiler needs its library
+directory. Waveforms stay under `artifacts/rtl/`. The restricted C# VCD reader
+samples the settled values at each known 0-to-1 clock edge. Selected signals
+must have known two-state values; X/Z is rejected. Values are unsigned, and
+unsupported VCD constructs, clock glitches within one timestamp, unknown
+signals, and decreasing timestamps fail explicitly. This sampling policy is
+for simulation observation and is distinct from SVA preponed-region sampling.
+See [fixture provenance](tests/fixtures/picorv32/README.md).
+
 The C# port uses immutable samples and arbitrary-precision integers, preserving
 the trace format's mathematical arithmetic. This is not an RTL proof engine.
 
-Experimental Python/SystemVerilog formal verification prototype using Z3.
+## Python compatibility reference
+
+The earlier Python API and tests are retained below for comparison during the
+C# migration. Python is not required by the active C# checker or build helpers.
 
 The published repository now includes an executable Python contract trace checker, based on [the v0.2 contract design](docs/contract-language-v0.2.md). It checks labeled requirements, invariants, exact-delay and inclusive bounded-window responses, independent overlapping obligations, sampled reset cancellation, and cover observations.
 

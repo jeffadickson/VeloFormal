@@ -15,6 +15,12 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build, test, and report coverage with C# helper
         run: dotnet run --project tools/VeloFormal.Build -c Release -- coverage
+      - name: Install Icarus for pinned RTL simulation
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+      - name: Check pinned PicoRV32 divider trace
+        if: runner.os == 'Linux'
+        run: dotnet run --project tools/VeloFormal.Build -c Release -- rtl
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.os }}
