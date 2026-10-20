@@ -57,12 +57,12 @@ public sealed class ReportDetailTests
             case "failure_location":
                 var finding = Assert.Single(TraceChecker.Check(C(), [S(), S(2)]).Findings);
                 Assert.Equal(0, finding.TriggerSample); Assert.Equal(1, finding.Sample); break;
-            case "cli_json":
+            case "cli_json": {
                 const string input = """{"contract":{"ensures":[{"label":"next","when":"True","response":"False","after":2}]},"samples":[{}]}""";
                 using var output = new StringWriter(); using var error = new StringWriter();
                 Assert.Equal(1, Command.Run(["--trace", "-"], new StringReader(input), output, error));
                 using var json = JsonDocument.Parse(output.ToString());
-                Assert.Equal(2, json.RootElement.GetProperty("obligations")[0].GetProperty("deadline_sample").GetInt64()); break;
+                Assert.Equal(2, json.RootElement.GetProperty("obligations")[0].GetProperty("deadline_sample").GetInt64()); break; }
         }
     }
 }

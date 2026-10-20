@@ -83,7 +83,7 @@ public sealed record TraceDocument(Contract Contract, IReadOnlyList<Sample> Samp
                 return new(values);
     }
 
-    private static bool SignalName(string name) => name.Length > 0 && char.IsAsciiLetter(name[0])
+    internal static bool SignalName(string name) => name.Length > 0 && char.IsAsciiLetter(name[0])
         && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')
         && name is not "True" and not "False" and not "and" and not "or" and not "not" and not "at_trigger";
     private static int Delay(JsonElement element) => element.ValueKind == JsonValueKind.Number

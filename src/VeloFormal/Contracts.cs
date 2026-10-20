@@ -11,6 +11,7 @@ public sealed class Sample
     private readonly IReadOnlyDictionary<string, BigInteger> values;
     public Sample(IEnumerable<KeyValuePair<string, BigInteger>> values) =>
         this.values = new ReadOnlyDictionary<string, BigInteger>(values.ToDictionary(p => p.Key, p => p.Value));
+    public IReadOnlyDictionary<string, BigInteger> Values => values;
     public BigInteger this[string name] => values.TryGetValue(name, out var value)
         ? value : throw new InputException($"missing signal: {name}");
 }

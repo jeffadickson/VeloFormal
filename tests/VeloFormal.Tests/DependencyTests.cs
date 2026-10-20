@@ -11,7 +11,7 @@ public sealed class DependencyTests
         string[] current = ["", "count", "count", "a,z", "a,b", "ready", "a,b,c", "", "count", "", "flags,mask",
             "a", "optional", "", "x", "Data,data_0", "a", "b,c", "", "ready"];
         string[] captured = ["", "", "", "", "", "", "", "count", "count", "a,b", "", "b", "", "a,z", "", "", "", "a", "", ""];
-        return sources.Take(5).Select((source, index) => new object[] { 321 + index, source, current[index], captured[index] });
+        return sources.Take(20).Select((source, index) => new object[] { 321 + index, source, current[index], captured[index] });
     }
     [Theory, MemberData(nameof(Cases))]
     public void DescribeReferences(int iteration, string source, string current, string captured)
