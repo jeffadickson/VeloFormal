@@ -4,6 +4,8 @@ using System.Numerics;
 namespace VeloFormal;
 
 /// <summary>Restricted integer expression parser. No code evaluation or reflection.</summary>
+public sealed record ExpressionInfo(IReadOnlyList<string> CurrentSignals, IReadOnlyList<string> TriggerSignals);
+
 public static class Expression
 {
     public static Func<Sample, Sample?, bool> Compile(string source, bool captures = false)
@@ -12,6 +14,16 @@ public static class Expression
             throw new InputException("expression must contain 1..4096 characters");
         var root = new Parser(source, captures).Parse();
         return (sample, capture) => root.Evaluate(sample, capture) != BigInteger.Zero;
+    }
+
+    public static ExpressionInfo Describe(string source, bool captures = false)
+    {
+        if (string.IsNullOrWhiteSpace(source) || source.Length > 4096)
+            throw new InputException("expression must contain 1..4096 characters");
+        var parser = new Parser(source, captures);
+        parser.Parse();
+        return new(Array.AsReadOnly(parser.CurrentSignals.Order(StringComparer.Ordinal).ToArray()),
+            Array.AsReadOnly(parser.TriggerSignals.Order(StringComparer.Ordinal).ToArray()));
     }
 
     public static Func<Sample, bool> Predicate(string source)
@@ -79,6 +91,8 @@ public static class Expression
 
     private sealed class Parser(string source, bool captures)
     {
+        public HashSet<string> CurrentSignals { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> TriggerSignals { get; } = new(StringComparer.Ordinal);
         private int position;
         private string token = "";
         private int depth;
@@ -207,7 +221,9 @@ public static class Expression
                 }
                 if (token.Length > 0 && char.IsAsciiLetter(token[0]) && token is not "and" and not "or" and not "not")
                 {
-                    var name = token; Next(); return new Signal(name);
+                    var name = token; Next();
+                    (captured ? TriggerSignals : CurrentSignals).Add(name);
+                    return new Signal(name);
                 }
                 Fail("expected expression");
                 throw new InvalidOperationException();

@@ -47,8 +47,14 @@ public sealed class Contract
 }
 
 public sealed record Finding(string Label, int Sample, string Kind, int? TriggerSample = null);
+public sealed record PendingObligation(string Label, int TriggerSample, long EarliestSample, long DeadlineSample);
 public sealed record Report(string Status, IReadOnlyList<Finding> Findings, int Pending,
-    int Cancelled, int ActiveSamples, IReadOnlyList<string> Untriggered, IReadOnlyList<string> Covered);
+    int Cancelled, int ActiveSamples, IReadOnlyList<string> Untriggered, IReadOnlyList<string> Covered)
+{
+    public int ObservedSamples { get; init; }
+    public int ResetSamples { get; init; }
+    public IReadOnlyList<PendingObligation> Obligations { get; init; } = Array.Empty<PendingObligation>();
+}
 
 public static class TraceChecker
 {
@@ -125,7 +131,13 @@ public static class TraceChecker
         var status = invalid ? "invalid-assumptions" : findings.Count > 0 ? "counterexample"
             : pending.Count > 0 || active == 0 ? "incomplete" : "trace-pass";
         return new(status, findings.AsReadOnly(), pending.Count, cancelled, active,
-            contract.Ensures.Where(c => !triggered.Contains(c.Label)).Select(c => c.Label).ToArray(),
-            contract.Covers.Where(c => covered.Contains(c.Label)).Select(c => c.Label).ToArray());
+            Array.AsReadOnly(contract.Ensures.Where(c => !triggered.Contains(c.Label)).Select(c => c.Label).ToArray()),
+            Array.AsReadOnly(contract.Covers.Where(c => covered.Contains(c.Label)).Select(c => c.Label).ToArray()))
+        {
+            ObservedSamples = tick + 1,
+            ResetSamples = tick + 1 - active,
+            Obligations = Array.AsReadOnly(pending.Select(o => new PendingObligation(o.Clause.Label,
+                o.Start, (long)o.Start + o.Clause.Earliest, (long)o.Start + o.Clause.Latest)).ToArray())
+        };
     }
 }
