@@ -28,6 +28,12 @@ namespace VeloFormal
                     output.WriteLine(JsonSerializer.Serialize(waveReport, JsonOptions));
                     return waveReport.Status == "trace-pass" ? 0 : 1;
                 }
+                if (args.Contains("--samples", StringComparer.Ordinal))
+                {
+                    var streamReport = StreamCommand.Check(args, input);
+                    output.WriteLine(JsonSerializer.Serialize(streamReport, JsonOptions));
+                    return streamReport.Status == "trace-pass" ? 0 : 1;
+                }
                 string json;
                 if (args is ["--demo"])
                     json = """{"contract":{"invariants":{"nonnegative":"count >= 0"}},"samples":[{"count":0},{"count":1}]}""";

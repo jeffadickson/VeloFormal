@@ -47,7 +47,26 @@ public sealed record TraceDocument(Contract Contract, IReadOnlyList<Sample> Samp
             var result = new List<Sample>();
             foreach (var sample in samples.EnumerateArray())
             {
-                if (sample.ValueKind != JsonValueKind.Object) throw new InputException($"sample {result.Count} must be an object");
+                result.Add(ParseSample(sample, result.Count));
+            }
+            return new(contract, result.AsReadOnly());
+        }
+        catch (JsonException error) { throw new InputException($"invalid JSON: {error.Message}"); }
+    }
+
+    public static Sample ParseSample(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 64 });
+            return ParseSample(document.RootElement, 0);
+        }
+        catch (JsonException error) { throw new InputException($"invalid JSON sample: {error.Message}"); }
+    }
+
+    private static Sample ParseSample(JsonElement sample, int tick)
+    {
+                if (sample.ValueKind != JsonValueKind.Object) throw new InputException($"sample {tick} must be an object");
                 var values = new Dictionary<string, BigInteger>(StringComparer.Ordinal);
                 foreach (var signal in sample.EnumerateObject())
                 {
@@ -58,14 +77,10 @@ public sealed record TraceDocument(Contract Contract, IReadOnlyList<Sample> Samp
                     else if (value.ValueKind == JsonValueKind.False) integer = BigInteger.Zero;
                     else if (value.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(value.GetRawText(),
                         NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out integer))
-                        throw new InputException($"sample {result.Count}, signal {signal.Name}: expected boolean or integer");
+                        throw new InputException($"sample {tick}, signal {signal.Name}: expected boolean or integer");
                     if (!values.TryAdd(signal.Name, integer)) throw new InputException($"duplicate signal: {signal.Name}");
                 }
-                result.Add(new(values));
-            }
-            return new(contract, result.AsReadOnly());
-        }
-        catch (JsonException error) { throw new InputException($"invalid JSON: {error.Message}"); }
+                return new(values);
     }
 
     private static bool SignalName(string name) => name.Length > 0 && char.IsAsciiLetter(name[0])
