@@ -16,11 +16,18 @@ namespace VeloFormal
         {
             if (args.Length == 0 || args is ["--help"] or ["-h"])
             {
-                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --help");
+                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --help");
                 return 0;
             }
             try
             {
+                if (args.Contains("--vcd", StringComparer.Ordinal))
+                {
+                    var wave = WaveformCommand.Read(args, input);
+                    var waveReport = TraceChecker.Check(wave.Contract, wave.Samples);
+                    output.WriteLine(JsonSerializer.Serialize(waveReport, JsonOptions));
+                    return waveReport.Status == "trace-pass" ? 0 : 1;
+                }
                 string json;
                 if (args is ["--demo"])
                     json = """{"contract":{"invariants":{"nonnegative":"count >= 0"}},"samples":[{"count":0},{"count":1}]}""";

@@ -48,12 +48,12 @@ public static class VcdReader
                 string tail = Next();
                 if (tail != "$end")
                 {
-                    var range = Regex.Match(tail, @"^\[([0-9]+)(?::([0-9]+))?\]$");
-                    if (!range.Success || !long.TryParse(range.Groups[1].Value, out long first)
-                        || (range.Groups[2].Success && !long.TryParse(range.Groups[2].Value, out _)))
+                    var range = Regex.Match(tail, @"^\[(-?[0-9]+)(?::(-?[0-9]+))?\]$");
+                    if (!range.Success || !BigInteger.TryParse(range.Groups[1].Value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out BigInteger first)
+                        || (range.Groups[2].Success && !BigInteger.TryParse(range.Groups[2].Value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _)))
                         throw new InputException("invalid VCD declaration range");
-                    long last = range.Groups[2].Success ? long.Parse(range.Groups[2].Value, CultureInfo.InvariantCulture) : first;
-                    if (Math.Abs(first - last) + 1 != width || Next() != "$end")
+                    BigInteger last = range.Groups[2].Success ? BigInteger.Parse(range.Groups[2].Value, CultureInfo.InvariantCulture) : first;
+                    if (BigInteger.Abs(first - last) + 1 != width || Next() != "$end")
                         throw new InputException("VCD declaration range does not match width");
                 }
             }
