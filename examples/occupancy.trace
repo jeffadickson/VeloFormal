@@ -1,0 +1,22 @@
+{
+  "contract": {
+    "reset": "not rst_n",
+    "requires": {"legal_count": "0 <= count <= 4"},
+    "invariants": {"empty_consistent": "empty == (count == 0)"},
+    "ensures": [
+      {
+        "label": "occupancy_rises",
+        "when": "write",
+        "after": 1,
+        "response": "count == at_trigger(count) + 1"
+      }
+    ],
+    "covers": {"two_items": "count == 2"}
+  },
+  "samples": [
+    {"rst_n": false},
+    {"rst_n": true, "write": true, "count": 0, "empty": true},
+    {"rst_n": true, "write": true, "count": 1, "empty": false},
+    {"rst_n": true, "write": false, "count": 2, "empty": false}
+  ]
+}

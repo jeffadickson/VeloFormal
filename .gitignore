@@ -11,3 +11,10 @@ dist/
 *.smt2
 *.json
 *.log
+**/bin/
+**/obj/
+artifacts/
+.dotnet-home/
+.nuget/
+!global.json
+!.config/dotnet-tools.json

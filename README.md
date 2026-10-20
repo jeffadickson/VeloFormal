@@ -1,9 +1,64 @@
 # VeloFormal
 
+Active development now targets C#/.NET 8. The Python package below is retained
+as a compatibility reference. Run the C# checker with:
+
+```console
+dotnet run --project src/VeloFormal.Cli -- --trace examples/occupancy.trace
+dotnet run --project tools/VeloFormal.Build -c Release -- coverage
+```
+
+The C# helper builds the solution, runs xUnit with Coverlet, restores the pinned
+ReportGenerator tool, and writes HTML, text, and Cobertura reports to a fresh
+directory under `artifacts/coverage/`. Use `test` instead of `coverage` to omit
+coverage. All development helpers are C#; no Python helper is required.
+
+The C# port uses immutable samples and arbitrary-precision integers, preserving
+the trace format's mathematical arithmetic. This is not an RTL proof engine.
+
 Experimental Python/SystemVerilog formal verification prototype using Z3.
 
-Current development baseline: v1.2. Features include bounded model checking, incremental checks, k-induction, a restricted SystemVerilog grammar and AST, small FIFO memory models, and ready/valid protocol examples.
+The published repository now includes an executable Python contract trace checker, based on [the v0.2 contract design](docs/contract-language-v0.2.md). It checks labeled requirements, invariants, exact-delay and inclusive bounded-window responses, independent overlapping obligations, sampled reset cancellation, and cover observations.
 
 **Status:** Research prototype. Not full IEEE 1800 or a drop-in replacement for Yosys/SymbiYosys. Proof results are valid only under the supported two-state model and declared assumptions.
 
-The full v1.2 source tree, tests, and examples are being prepared for repository publication. See the project release archive supplied in the development conversation. No claim of complete RTL-language support is made.
+The earlier v1.2 SystemVerilog/Z3 implementation described in the development conversation is absent from the published history. Bounded model checking, induction, RTL parsing, and solver-backed vacuity analysis are not available in this checkout. The existing package version is retained for continuity; it does not certify those capabilities.
+
+Run with Python 3.10 or later (the trace API uses only the standard library):
+
+```console
+python -m unittest discover -s tests -v
+python -m veloformal --demo
+python -m veloformal --trace examples/occupancy.trace
+```
+
+For the installed `veloformal` command, install with `python -m pip install -e .`.
+
+```python
+from veloformal import Contract, Ensure, check_trace
+
+contract = Contract(ensures=(Ensure(
+    "occupancy_rises",
+    trigger=lambda s: s["write"],
+    response=lambda s, captured: s["count"] == captured["count"] + 1,
+),))
+report = check_trace(contract, [
+    {"write": True, "count": 0},
+    {"write": False, "count": 1},
+])
+assert report.status == "trace-pass"
+```
+
+Each input mapping represents one clock edge. `Ensure` defaults to a one-cycle delay; set `earliest` and `latest` for a finite inclusive window. The response receives a snapshot of the triggering sample. Reset samples disable checks and cancel pending obligations. Predicates must be pure and return booleans; missing signals and predicate exceptions propagate to the caller. Python arithmetic does not implement RTL width or signedness rules.
+
+Results are `trace-pass`, `counterexample`, `incomplete` (unfinished obligations or no active samples), or `invalid-assumptions`. A failed requirement invalidates the trace as provider evidence and stops checking. Findings include zero-based sample indices and trigger indices for delayed failures. `untriggered` records triggers absent from this trace; it does not establish formal unreachability. Covers record observed hits only. **A trace pass is never a bounded or unbounded formal proof.**
+
+Next steps: recover the earlier release archive, implement a typed expression IR and contract parser, then connect solver-backed transition-system checks. The remaining v0.2 features, including `prev`, parameter elaboration, and proof provenance, remain design proposals.
+
+### Recorded trace input
+
+`--trace FILE` reads a JSON document containing `contract` and `samples`; `--trace -` reads stdin. See [the occupancy example](examples/occupancy.trace). The contract accepts `reset`, label-to-expression maps for `requires`, `invariants`, and `covers`, and an `ensures` array. Each ensure has `label`, `when`, `response`, and exactly one of `after: N` or `within: [A, B]`.
+
+Expressions support signal names, integer/boolean literals (`True` and `False`), `and`, `or`, `not`, comparisons, parentheses, addition, subtraction, and bitwise `&`, `|`, `^`, `~`. Responses may use `at_trigger(expression)`. Sample values must be JSON booleans or integers. Arithmetic uses Python integers; this format has no implicit fixed-width wrapping or RTL elaboration. Attribute access, indexing, other calls, and nested captures are rejected. Unknown fields and invalid delay bounds are errors. Missing signals are errors when their expression is evaluated; reset-disabled samples may omit inactive signals.
+
+The CLI prints a JSON report. Exit code 0 means `trace-pass`, 1 means any other observation status, and 2 means invalid input or a file error. No CLI result constitutes formal proof.
