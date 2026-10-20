@@ -1,13 +1,20 @@
 using System.Globalization;
 using System.Numerics;
+using System.Text.RegularExpressions;
 
 namespace VeloFormal;
 
 /// <summary>Unsigned two-state samples at settled rising edges of a scalar VCD clock.</summary>
+public sealed record VcdFrame(long Timestamp, Sample Sample);
+
 public static class VcdReader
 {
     private sealed record Variable(string Id, int Width);
     public static IReadOnlyList<Sample> Read(string text, string clock,
+        IReadOnlyDictionary<string, string> signals) =>
+        Array.AsReadOnly(ReadFrames(text, clock, signals).Select(frame => frame.Sample).ToArray());
+
+    public static IReadOnlyList<VcdFrame> ReadFrames(string text, string clock,
         IReadOnlyDictionary<string, string> signals)
     {
         if (signals.Count == 0) throw new InputException("select at least one VCD signal");
@@ -20,7 +27,7 @@ public static class VcdReader
         while (true)
         {
             string token = Next();
-            if (token == "$enddefinitions") { if (Next() != "$end") throw new InputException("invalid VCD header"); break; }
+            if (token == "$enddefinitions") { if (Next() != "$end" || scope.Count != 0) throw new InputException("invalid or unbalanced VCD header"); break; }
             if (token == "$scope") { Next(); scope.Add(Next()); if (Next() != "$end") throw new InputException("invalid scope"); }
             else if (token == "$upscope")
             {
@@ -38,7 +45,17 @@ public static class VcdReader
                     throw new InputException($"unsupported VCD type: {type}");
                 string path = string.Join('.', scope.Append(name));
                 if (!variables.TryAdd(path, new(id, width))) throw new InputException($"duplicate VCD signal: {path}");
-                End();
+                string tail = Next();
+                if (tail != "$end")
+                {
+                    var range = Regex.Match(tail, @"^\[([0-9]+)(?::([0-9]+))?\]$");
+                    if (!range.Success || !long.TryParse(range.Groups[1].Value, out long first)
+                        || (range.Groups[2].Success && !long.TryParse(range.Groups[2].Value, out _)))
+                        throw new InputException("invalid VCD declaration range");
+                    long last = range.Groups[2].Success ? long.Parse(range.Groups[2].Value, CultureInfo.InvariantCulture) : first;
+                    if (Math.Abs(first - last) + 1 != width || Next() != "$end")
+                        throw new InputException("VCD declaration range does not match width");
+                }
             }
             else if (token is "$date" or "$version" or "$timescale" or "$comment") End();
             else throw new InputException($"unsupported VCD header: {token}");
@@ -52,13 +69,14 @@ public static class VcdReader
         if (variables.Values.GroupBy(v => v.Id).Any(g => g.Select(v => v.Width).Distinct().Count() > 1))
             throw new InputException("VCD aliases have inconsistent widths");
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
-        var samples = new List<Sample>();
+        var samples = new List<VcdFrame>();
         string? oldClock = null;
         long time = -1;
         int clockChanges = 0;
         void Flush()
         {
             values.TryGetValue(clockVariable.Id, out var current);
+            if (current is not null && current.Any(c => c is 'x' or 'z')) throw new InputException($"unknown VCD clock at time {time}");
             if (clockChanges > 1) throw new InputException($"multiple VCD clock changes at time {time}");
             if (oldClock == "0" && current == "1")
             {
@@ -71,7 +89,7 @@ public static class VcdReader
                     foreach (char bit in bits) value = (value << 1) + (bit - '0');
                     sample.Add(name, value);
                 }
-                samples.Add(new(sample));
+                samples.Add(new(time, new Sample(sample)));
             }
             oldClock = current;
             clockChanges = 0;
@@ -89,12 +107,13 @@ public static class VcdReader
             else if (token == "$comment") End();
             else
             {
-                string id, bits;
+                string id, bits; bool scalar = false;
                 if (token[0] is 'b' or 'B') { bits = token[1..].ToLowerInvariant(); id = Next(); }
                 else if (token[0] is '0' or '1' or 'x' or 'X' or 'z' or 'Z')
-                { bits = token[..1].ToLowerInvariant(); id = token[1..]; }
+                { bits = token[..1].ToLowerInvariant(); id = token[1..]; scalar = true; }
                 else throw new InputException($"unsupported VCD value: {token}");
                 if (!byId.TryGetValue(id, out var variable)) throw new InputException($"undeclared VCD identifier: {id}");
+                if (scalar && variable.Width != 1) throw new InputException("scalar VCD change for vector signal");
                 if (bits.Length == 0 || bits.Length > variable.Width || bits.Any(c => c is not '0' and not '1' and not 'x' and not 'z'))
                     throw new InputException("invalid VCD bit vector");
                 if (id == clockVariable.Id && (!values.TryGetValue(id, out var prior) || prior != bits)) clockChanges++;
