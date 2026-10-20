@@ -9,7 +9,7 @@ regression-driven increments, not 200 separate full feature rewrites or test run
 |---|---|---|
 | 001–050 | C# solution, immutable samples, monitor port, expression parser, CLI, coverage helper; 50 expression cases | Release build: zero warnings/errors; 50/50 passed, Coverlet XML generated |
 | 051–100 | Temporal/reset/assumption regressions and clause/sample input diagnostics | Release build: zero warnings/errors; 100/100 cumulative tests passed; Coverlet and HTML/Text/Cobertura reports generated |
-| 101–150 | Input validation and CLI regressions | Pending |
+| 101–150 | Input validation and CLI regressions | Release build: zero warnings/errors; 150/150 cumulative tests passed; Coverlet and HTML/Text/Cobertura reports generated |
 | 151–200 | RTL-derived fixtures and integration regressions | Pending |
 
 The original uncommitted Python prototype is retained as a compatibility reference.
