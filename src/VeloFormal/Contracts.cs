@@ -62,17 +62,22 @@ public static class TraceChecker
         var covered = new HashSet<string>(StringComparer.Ordinal);
         int cancelled = 0, active = 0, tick = -1;
         bool invalid = false;
+        bool Evaluate(string label, Func<bool> predicate)
+        {
+            try { return predicate(); }
+            catch (InputException error) { throw new InputException($"clause {label}, sample {tick}: {error.Message}"); }
+        }
         foreach (var sample in samples)
         {
             tick = checked(tick + 1);
-            if (contract.Reset(sample))
+            if (Evaluate("<reset>", () => contract.Reset(sample)))
             {
                 cancelled = checked(cancelled + pending.Count);
                 pending.Clear();
                 continue;
             }
             active++;
-            var failures = contract.Requires.Where(c => !c.Test(sample)).ToArray();
+            var failures = contract.Requires.Where(c => !Evaluate(c.Label, () => c.Test(sample))).ToArray();
             if (failures.Length != 0)
             {
                 findings.AddRange(failures.Select(c => new Finding(c.Label, tick, "require")));
@@ -80,26 +85,27 @@ public static class TraceChecker
                 break;
             }
             foreach (var clause in contract.Invariants)
-                if (!clause.Test(sample)) findings.Add(new(clause.Label, tick, "invariant"));
+                if (!Evaluate(clause.Label, () => clause.Test(sample))) findings.Add(new(clause.Label, tick, "invariant"));
             var remaining = new List<Obligation>();
             foreach (var obligation in pending)
             {
                 var clause = obligation.Clause;
                 int age = tick - obligation.Start;
-                if (age >= clause.Earliest && clause.Response(sample, obligation.Capture)) continue;
+                if (age >= clause.Earliest && Evaluate(clause.Label,
+                    () => clause.Response(sample, obligation.Capture))) continue;
                 if (age == clause.Latest)
                     findings.Add(new(clause.Label, tick, "ensure", obligation.Start));
                 else remaining.Add(obligation);
             }
             pending = remaining;
             foreach (var clause in contract.Ensures)
-                if (clause.Trigger(sample))
+                if (Evaluate(clause.Label, () => clause.Trigger(sample)))
                 {
                     triggered.Add(clause.Label);
                     pending.Add(new(clause, tick, sample));
                 }
             foreach (var clause in contract.Covers)
-                if (clause.Test(sample)) covered.Add(clause.Label);
+                if (Evaluate(clause.Label, () => clause.Test(sample))) covered.Add(clause.Label);
         }
         var status = invalid ? "invalid-assumptions" : findings.Count > 0 ? "counterexample"
             : pending.Count > 0 || active == 0 ? "incomplete" : "trace-pass";
