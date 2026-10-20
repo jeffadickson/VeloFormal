@@ -10,7 +10,7 @@ public sealed class BuildOptionTests
             ["coverage", "--no-build", "--no-restore"], ["unknown"], ["test", "test"],
             ["--no-build", "--no-build"], ["--no-restore", "--no-restore"], ["--help", "test"],
             ["Coverage"], ["--unknown"], ["--no-build"], ["--no-restore"], ["rtl", "--no-build"]];
-        return args.Take(15).Select((arguments, index) => new object[] { 361 + index, arguments });
+        return args.Take(20).Select((arguments, index) => new object[] { 361 + index, arguments });
     }
     [Theory, MemberData(nameof(Cases))]
     public void ParseBuildModes(int iteration, string[] args)

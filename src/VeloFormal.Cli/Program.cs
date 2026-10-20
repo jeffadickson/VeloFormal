@@ -16,7 +16,7 @@ namespace VeloFormal
         {
             if (args.Length == 0 || args is ["--help"] or ["-h"])
             {
-                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --help");
+                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --help");
                 return 0;
             }
             try

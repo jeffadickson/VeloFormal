@@ -1,0 +1,1 @@
+{"contract":{"ensures":[{"label":"rise","when":"write","response":"count == at_trigger(count) + 1","after":1}]},"samples":[]}

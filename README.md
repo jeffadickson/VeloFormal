@@ -1,5 +1,7 @@
 # VeloFormal
 
+For VCD/JSONL commands, API limits, and replay/export semantics, see [recorded trace workflows](docs/trace-workflows.md).
+
 Active development now targets C#/.NET 8. The Python package below is retained
 as a compatibility reference. Run the C# checker with:
 
