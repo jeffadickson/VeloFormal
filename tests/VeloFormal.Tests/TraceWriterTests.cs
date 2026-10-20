@@ -7,7 +7,7 @@ public sealed class TraceWriterTests
     {
         string[] names = ["empty", "zero", "one", "negative", "wide_positive", "wide_negative", "int_max", "int_min", "sorted", "roundtrip",
             "two_lines", "writer_ownership", "null_sample", "invalid_name", "unicode_name", "reserved_name", "cancel_before", "cancel_mid", "snapshot", "boolean_canonical"];
-        return names.Take(10).Select((name, index) => new object[] { 341 + index, name });
+        return names.Take(20).Select((name, index) => new object[] { 341 + index, name });
     }
     [Theory, MemberData(nameof(Cases))]
     public void ExportSamples(int iteration, string scenario)

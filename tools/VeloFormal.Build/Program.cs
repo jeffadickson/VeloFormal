@@ -1,17 +1,17 @@
 using System.Diagnostics;
 using VeloFormal;
+using VeloFormal.Build;
 
 // All development orchestration lives in this C# executable; no shell scripts.
 var root = Directory.GetCurrentDirectory();
 while (!File.Exists(Path.Combine(root, "VeloFormal.sln")))
     root = Directory.GetParent(root)?.FullName ?? throw new InvalidOperationException("run inside the VeloFormal checkout");
-if (args.Length > 1 || (args.Length == 1 && args[0] is not "test" and not "coverage" and not "rtl"))
-{
-    Console.Error.WriteLine("usage: dotnet run --project tools/VeloFormal.Build -- [test|coverage|rtl]");
-    return 2;
-}
-bool coverage = args is ["coverage"];
-if (args is ["rtl"])
+BuildOptions options;
+try { options = BuildOptions.Parse(args); }
+catch (InputException error) { Console.Error.WriteLine(error.Message); Console.Error.WriteLine(BuildOptions.Usage); return 2; }
+if (options.Mode == "help") { Console.WriteLine(BuildOptions.Usage); return 0; }
+bool coverage = options.Mode == "coverage";
+if (options.Mode == "rtl")
 {
     string directory = Path.Combine(root, "artifacts", "rtl", Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(directory);
@@ -69,14 +69,20 @@ int Run(params string[] arguments)
     process.WaitForExit();
     return process.ExitCode;
 }
-int code = Run("build", "VeloFormal.sln", "-c", "Release");
+int code = 0;
+if (!options.NoBuild)
+{
+    var build = new List<string> { "build", "VeloFormal.sln", "-c", "Release" };
+    if (options.NoRestore) build.Add("--no-restore");
+    code = Run(build.ToArray());
+}
 if (code != 0) return code;
 var test = new List<string> { "test", "tests/VeloFormal.Tests", "-c", "Release", "--no-build",
     "--results-directory", results, "--logger", "trx" };
 if (coverage) test.AddRange(["--collect:XPlat Code Coverage", "--settings", "coverage.runsettings"]);
 code = Run(test.ToArray());
 if (code != 0 || !coverage) return code;
-code = Run("tool", "restore");
+if (!options.NoRestore) code = Run("tool", "restore");
 if (code != 0) return code;
 return Run("tool", "run", "reportgenerator", $"-reports:{results}/**/coverage.cobertura.xml",
     $"-targetdir:{root}/artifacts/coverage/{run}", "-reporttypes:Html;TextSummary;Cobertura");

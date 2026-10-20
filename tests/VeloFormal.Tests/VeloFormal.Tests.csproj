@@ -7,5 +7,6 @@
     <PackageReference Include="coverlet.collector" Version="6.0.2" PrivateAssets="all" />
     <ProjectReference Include="../../src/VeloFormal/VeloFormal.csproj" />
     <ProjectReference Include="../../src/VeloFormal.Cli/VeloFormal.Cli.csproj" />
+    <ProjectReference Include="../../tools/VeloFormal.Build/VeloFormal.Build.csproj" />
   </ItemGroup>
 </Project>
