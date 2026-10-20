@@ -6,7 +6,7 @@ public sealed class SampleStreamTests
     {
         string[] names = ["empty", "blank", "one", "two", "crlf", "no_newline", "negative", "boolean", "big_integer",
             "float", "xz", "duplicate", "array", "malformed", "line_limit", "exact_limit", "invalid_limit", "line_number", "lazy", "reader_ownership"];
-        return names.Take(15).Select((name, index) => new object[] { 261 + index, name });
+        return names.Take(20).Select((name, index) => new object[] { 261 + index, name });
     }
     [Theory, MemberData(nameof(Cases))]
     public void StreamBoundaries(int iteration, string scenario)

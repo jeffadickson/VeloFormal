@@ -54,8 +54,13 @@ public static class TraceChecker
 {
     private sealed record Obligation(EnsureClause Clause, int Start, Sample Capture);
 
-    public static Report Check(Contract contract, IEnumerable<Sample> samples)
+    public static Report Check(Contract contract, IEnumerable<Sample> samples, CheckOptions? options = null, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(contract);
+        ArgumentNullException.ThrowIfNull(samples);
+        options ??= new();
+        options.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
         var pending = new List<Obligation>();
         var findings = new List<Finding>();
         var triggered = new HashSet<string>(StringComparer.Ordinal);
@@ -64,11 +69,19 @@ public static class TraceChecker
         bool invalid = false;
         bool Evaluate(string label, Func<bool> predicate)
         {
-            try { return predicate(); }
+            cancellationToken.ThrowIfCancellationRequested();
+            try { bool result = predicate(); cancellationToken.ThrowIfCancellationRequested(); return result; }
             catch (InputException error) { throw new InputException($"clause {label}, sample {tick}: {error.Message}"); }
+        }
+        void AddFinding(Finding finding)
+        {
+            if (findings.Count >= options.MaxFindings) throw new InputException("finding limit exceeded");
+            findings.Add(finding);
         }
         foreach (var sample in samples)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (tick + 1 >= options.MaxSamples) throw new InputException("sample limit exceeded");
             tick = checked(tick + 1);
             if (Evaluate("<reset>", () => contract.Reset(sample)))
             {
@@ -80,12 +93,12 @@ public static class TraceChecker
             var failures = contract.Requires.Where(c => !Evaluate(c.Label, () => c.Test(sample))).ToArray();
             if (failures.Length != 0)
             {
-                findings.AddRange(failures.Select(c => new Finding(c.Label, tick, "require")));
+                foreach (var failure in failures) AddFinding(new(failure.Label, tick, "require"));
                 invalid = true;
                 break;
             }
             foreach (var clause in contract.Invariants)
-                if (!Evaluate(clause.Label, () => clause.Test(sample))) findings.Add(new(clause.Label, tick, "invariant"));
+                if (!Evaluate(clause.Label, () => clause.Test(sample))) AddFinding(new(clause.Label, tick, "invariant"));
             var remaining = new List<Obligation>();
             foreach (var obligation in pending)
             {
@@ -94,7 +107,7 @@ public static class TraceChecker
                 if (age >= clause.Earliest && Evaluate(clause.Label,
                     () => clause.Response(sample, obligation.Capture))) continue;
                 if (age == clause.Latest)
-                    findings.Add(new(clause.Label, tick, "ensure", obligation.Start));
+                    AddFinding(new(clause.Label, tick, "ensure", obligation.Start));
                 else remaining.Add(obligation);
             }
             pending = remaining;
@@ -102,11 +115,13 @@ public static class TraceChecker
                 if (Evaluate(clause.Label, () => clause.Trigger(sample)))
                 {
                     triggered.Add(clause.Label);
+                    if (pending.Count >= options.MaxPending) throw new InputException("pending obligation limit exceeded");
                     pending.Add(new(clause, tick, sample));
                 }
             foreach (var clause in contract.Covers)
                 if (Evaluate(clause.Label, () => clause.Test(sample))) covered.Add(clause.Label);
         }
+        cancellationToken.ThrowIfCancellationRequested();
         var status = invalid ? "invalid-assumptions" : findings.Count > 0 ? "counterexample"
             : pending.Count > 0 || active == 0 ? "incomplete" : "trace-pass";
         return new(status, findings.AsReadOnly(), pending.Count, cancelled, active,

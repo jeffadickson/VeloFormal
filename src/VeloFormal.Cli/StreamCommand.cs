@@ -8,7 +8,7 @@ public static class StreamCommand
         if (args.Length != 4) throw new InputException("expected --samples FILE --contract FILE");
         for (int index = 0; index < args.Length; index += 2)
         {
-            if (args[index] is not "--samples" and not "--contract" || !options.TryAdd(args[index], args[index + 1]))
+            if (string.IsNullOrWhiteSpace(args[index + 1]) || args[index] is not "--samples" and not "--contract" || !options.TryAdd(args[index], args[index + 1]))
                 throw new InputException("invalid or duplicate streaming option");
         }
         if (!options.TryGetValue("--samples", out var path) || !options.TryGetValue("--contract", out var contractPath)

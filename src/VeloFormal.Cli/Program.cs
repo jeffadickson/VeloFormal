@@ -45,7 +45,7 @@ namespace VeloFormal
                 output.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
                 return report.Status == "trace-pass" ? 0 : 1;
             }
-            catch (Exception exception) when (exception is InputException or IOException or UnauthorizedAccessException)
+            catch (Exception exception) when (exception is InputException or IOException or UnauthorizedAccessException or ArgumentException)
             {
                 error.WriteLine($"veloformal: {exception.Message}");
                 return 2;
