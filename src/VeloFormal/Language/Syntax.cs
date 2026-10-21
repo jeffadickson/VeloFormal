@@ -1,6 +1,7 @@
 namespace VeloFormal.Language;
 
 public abstract record ExprSyntax(SourceSpan Span);
+public sealed record GroupedSyntax(ExprSyntax Expression, SourceSpan Span) : ExprSyntax(Span);
 public sealed record LiteralSyntax(string Text, SourceSpan Span) : ExprSyntax(Span);
 public sealed record NameSyntax(string Name, SourceSpan Span) : ExprSyntax(Span);
 public sealed record UnarySyntax(string Operator, ExprSyntax Operand, SourceSpan Span) : ExprSyntax(Span);
