@@ -21,7 +21,13 @@ public sealed class SemanticBinder
     public TypedExpression BindExpression(ExprSyntax syntax, bool allowCapture = false, LogicType? expected = null)
     {
         if (++depth > 128) throw Error(syntax, "binding nesting exceeds 128", "B009");
-        try { return Coerce(Core(syntax, allowCapture), expected, syntax); }
+        try
+        {
+            var result = Coerce(Core(syntax, allowCapture), expected, syntax);
+            if (result.Type.Kind == SortKind.Integer && result.Kind != "constant")
+                throw Error(syntax, "mathematical integers are static-only; use explicitly sized values");
+            return result;
+        }
         finally { depth--; }
     }
     private TypedExpression Core(ExprSyntax syntax, bool capture) => syntax switch
