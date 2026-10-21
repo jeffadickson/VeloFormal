@@ -33,7 +33,7 @@ public sealed class TransitionModel
         if (Signals.Select(s => s.Name).Distinct(StringComparer.Ordinal).Count() != Signals.Count) throw new InputException("duplicate signal");
         Next = new ReadOnlyDictionary<string, ExprSyntax>(next.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal));
         Parameters = new ReadOnlyDictionary<string, BigInteger>((parameters ?? []).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal));
-        if (Parameters.Any(p => !NameValid(p.Key) || p.Value.GetBitLength() > 4096) ||
+        if (Parameters.Count > 256 || Parameters.Any(p => !NameValid(p.Key) || p.Value.GetBitLength() > 4096) ||
             Parameters.Keys.Intersect(Signals.Select(s => s.Name), StringComparer.Ordinal).Any()) throw new InputException("invalid or shadowed parameter");
         if (!Next.Keys.Order(StringComparer.Ordinal).SequenceEqual(Signals.Where(s => s.IsState).Select(s => s.Name).Order(StringComparer.Ordinal)))
             throw new InputException("next must define each state exactly once and no inputs");
