@@ -1,0 +1,10 @@
+{
+  "module": "counter",
+  "clock": "clk",
+  "signals": [
+    { "name": "count", "type": "unsigned", "width": 8, "kind": "state" },
+    { "name": "enable", "type": "bool", "kind": "input" }
+  ],
+  "init": "count == 0",
+  "next": { "count": "ite(enable, count + 1, count)" }
+}

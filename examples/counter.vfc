@@ -1,0 +1,9 @@
+contract CounterSafety for counter
+    clock posedge clk
+    require bounded_enable: !enable || count < 8'd3
+    invariant bounded: count <= 8'd3
+    operation increment when enable:
+        ensure advances after 1 cycles:
+            count == at_trigger(count) + 1
+    cover reaches_three: count == 3
+end

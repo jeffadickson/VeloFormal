@@ -32,8 +32,14 @@ signals, and decreasing timestamps fail explicitly. This sampling policy is
 for simulation observation and is distinct from SVA preponed-region sampling.
 See [fixture provenance](tests/fixtures/picorv32/README.md).
 
-The C# port uses immutable samples and arbitrary-precision integers, preserving
-the trace format's mathematical arithmetic. This is not an RTL proof engine.
+The C# port supports both immutable trace checking and a bounded Z3 checker for the v0.2 contract grammar. The formal path accepts an explicit two-state transition model, not arbitrary Verilog elaboration:
+
+```console
+dotnet run --project src/VeloFormal.Cli -- --parse-contract examples/counter.vfc
+dotnet run --project src/VeloFormal.Cli -- --check-contract examples/counter.vfc --model examples/counter.model --depth 3
+```
+
+The checked-in counter example intentionally reports `incomplete` at finite depth because an unconstrained final-sample increment can still create an obligation past the horizon. A `bounded-pass` is finite-horizon evidence only, never a proof. See [the contract-language profile](docs/contract-language-v0.2.md) for supported syntax, status codes, and exclusions.
 
 ## Python compatibility reference
 
@@ -44,7 +50,7 @@ The published repository now includes an executable Python contract trace checke
 
 **Status:** Research prototype. Not full IEEE 1800 or a drop-in replacement for Yosys/SymbiYosys. Proof results are valid only under the supported two-state model and declared assumptions.
 
-The earlier v1.2 SystemVerilog/Z3 implementation described in the development conversation is absent from the published history. Bounded model checking, induction, RTL parsing, and solver-backed vacuity analysis are not available in this checkout. The existing package version is retained for continuity; it does not certify those capabilities.
+The earlier v1.2 SystemVerilog/Z3 implementation described in the development conversation is absent from the published history. The current C# profile supplies bounded model checking only for explicit transition models; induction, arbitrary RTL parsing, and solver-backed vacuity proof are not available. The existing package version is retained for continuity; it does not certify those capabilities.
 
 Run with Python 3.10 or later (the trace API uses only the standard library):
 
@@ -75,7 +81,7 @@ Each input mapping represents one clock edge. `Ensure` defaults to a one-cycle d
 
 Results are `trace-pass`, `counterexample`, `incomplete` (unfinished obligations or no active samples), or `invalid-assumptions`. A failed requirement invalidates the trace as provider evidence and stops checking. Findings include zero-based sample indices and trigger indices for delayed failures. `untriggered` records triggers absent from this trace; it does not establish formal unreachability. Covers record observed hits only. **A trace pass is never a bounded or unbounded formal proof.**
 
-Next steps: recover the earlier release archive, implement a typed expression IR and contract parser, then connect solver-backed transition-system checks. The remaining v0.2 features, including `prev`, parameter elaboration, and proof provenance, remain design proposals.
+Next steps include proof provenance, induction/PDR, and RTL elaboration. `prev`, compositional proof, and arbitrary SystemVerilog parsing remain intentionally unsupported in the current explicit-transition bounded-checking profile.
 
 ### Recorded trace input
 
