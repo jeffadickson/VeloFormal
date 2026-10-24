@@ -16,7 +16,7 @@ public sealed class SolverCoreTests
     }
     public static Sample Sample(SolverFrame frame) => new(frame.Values.Select(p => new KeyValuePair<string, BigInteger>(
         p.Key, BigInteger.Parse(p.Value, CultureInfo.InvariantCulture))));
-    public static void ReplayTransitions(SolverReport report, BoundContract bound)
+    internal static void ReplayTransitions(SolverReport report, BoundContract bound)
     {
         for (int time = 1; time < report.Counterexample.Count; time++)
             foreach (var state in bound.Model.Signals.Where(s => s.IsState))
