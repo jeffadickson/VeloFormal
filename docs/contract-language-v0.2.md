@@ -1,8 +1,8 @@
 # VeloFormal Contract Language — v0.2 design candidate
 
-Status: **proposed specification**, not implemented. Scope: RTL-oriented assume/guarantee contracts, not a new general-purpose programming language. Existing README describes a restricted SystemVerilog/Z3 prototype; this specification does not imply full SV/SVA support.
+Status: **implemented bounded-checking profile**. Scope: RTL-oriented assume/guarantee contracts, not a new general-purpose programming language. The implemented backend consumes an explicit two-state transition model; it does not elaborate arbitrary SystemVerilog or implement full SV/SVA support.
 
-## Twenty iterative design passes
+## Twenty design targets (not all implemented)
 
 | Pass | Issue | Decision | Acceptance condition |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Status: **proposed specification**, not implemented. Scope: RTL-oriented assume/
 | 19 | Diagnostics | Each clause has stable label and clock/sample index in traces | Counterexample maps to source clause |
 | 20 | Proof reporting | Distinguish proved / counterexample / bounded-pass / unknown / unsupported | BMC success never reported as proof |
 
-## Language sketch (not yet parser grammar)
+## Implemented grammar
 
 ```text
 contract FifoSafety for fifo
@@ -63,17 +63,17 @@ Let `S_t` be design state sampled at active clock tick `t`, `I_t` inputs, and `T
 - **Exact-delay**: `ensure after N cycles: Q` requires `Q` true at `t+N`; `N >= 1`.
 - **Bounded eventuality**: `ensure within A..B cycles: Q` requires `Q` true on at least one sample in inclusive `[t+A,t+B]`; `1 <= A <= B`.
 - **Invariant**: `G(active => Inv)`. Initial reset proof and inductive reachability obligations are different from runtime observation.
-- **Vacuity**: if a guarantee's trigger is unreachable given environmental assumptions, mark as vacuous, not meaningful evidence of successful operation. A separate cover goal can establish reachability.
-- **History**: `prev` is undefined at the first active sample. Require an explicit `history_valid` guard or reject such use.
+- **Reachability observation**: if a trigger or cover is not reached in the explored prefix, report `not-reached-within-checked-prefix`; this is neither a proof of unreachability nor a vacuity proof.
+- **History**: `prev` is not implemented in v0.2 and is rejected. `at_trigger(expr)` is available only in an `ensure` response and is evaluated at its own trigger sample.
 - **Type model**: `logic[n]` maps to n-bit bitvectors; signed arithmetic must be explicit and fixed-width; mathematical `integer` allowed for static parameters only in v0.2. Overflow of bitvectors wraps unless explicit widening is requested.
 
 ### Lowering strategy
 
-1. Resolve module and parameter bindings, width/type-check expressions against an elaborated RTL symbol table.
+1. Parse the indentation-sensitive contract grammar with source-located diagnostics, then resolve it against an explicit transition-model JSON signal table and static parameters.
 2. Produce typed clause IR: label, source span, clock/reset, role, trigger, delay interval, sampled captures, expression AST.
 3. Compile immediate invariants and requires into clocked assertions/assumptions. Compile delayed ensures into obligation monitors (including independent concurrent instances).
-4. Backends: emit SVA for simulator/formal-tool interop; emit transition-system constraints to Z3/BTOR2 for BMC. PDR or induction can be added without changing the source language.
-5. Record proof status and assumption set per property; require certified/provider-verified contracts before compositional abstraction.
+4. Backend: emit fixed-width transition-system constraints to Z3 for prefix bounded model checking. SVA, BTOR2, PDR, induction, and RTL elaboration are not implemented in this profile.
+5. Record bounded status, source span, solver version, counterexample frames, cover/trigger observations, and pending obligations. `bounded-pass` is never a proof.
 
 ### Deliberately unsupported in v0.2
 
@@ -81,7 +81,7 @@ Let `S_t` be design state sampled at active clock tick `t`, `I_t` inputs, and `T
 - Implicit proof of data ordering in a FIFO from a count-only specification. Separate data-integrity contracts are required.
 - Treating a bounded-pass as an unbounded proof.
 
-## Conformance cases
+## Conformance cases and design targets
 
 | ID | Fixture | Expected outcome |
 |---|---|---|
@@ -104,7 +104,7 @@ Let `S_t` be design state sampled at active clock tick `t`, `I_t` inputs, and `T
 | C17 | Implicit signed/unsigned comparison | Type error |
 | C18 | User requests four-state X-sensitive proof | Unsupported error |
 | C19 | Reachable invariant breach | Counterexample with clause label |
-| C20 | Fully discharged inductive proof | Proved with engine/model metadata |
+| C20 | Fully discharged inductive proof | **Design target only**: induction/proved status is not implemented |
 
 ## Open decisions requiring implementation experiments
 
@@ -114,3 +114,19 @@ Let `S_t` be design state sampled at active clock tick `t`, `I_t` inputs, and `T
 - How to express legal FIFO simultaneous push/pop semantics and multi-clock CDC without overspecifying implementations.
 
 References: CIRCT Verif dialect contracts https://circt.llvm.org/docs/Dialects/Verif/ ; SVA IEEE 1800 conceptual model; SymbiYosys/Yosys formal workflows.
+## Command-line workflow
+
+The implementation accepts a contract source file and a separate explicit transition model:
+
+```powershell
+dotnet run --project src/VeloFormal.Cli -- --parse-contract fifo.vfc
+dotnet run --project src/VeloFormal.Cli -- --check-contract fifo.vfc --model fifo.model.json --depth 32 --timeout-ms 10000 --max-queries 4096
+```
+
+`--parse-contract` reports a source-level summary. `--check-contract` returns JSON and exits 0 only for `bounded-pass`; counterexamples, inconsistent assumptions, and incomplete horizons exit 1; solver `unknown` exits 3; malformed input, binding errors, and I/O failures exit 2. Depth (0–128), timeout (1–60000 ms), and query budget (1–10000) are bounded. A model names one clock, declares Boolean or 1–256-bit signed/unsigned signals, provides an initial Boolean condition, and gives one next-state expression for every state signal. Inputs have no next-state definition.
+
+The checker incrementally asserts `Init`, transition equalities, and active `require` clauses through each prefix. It searches invariants and mature ensure obligations before later assumptions can hide an earlier violation. Each operation trigger creates an independent obligation; reset cancels an in-flight obligation. At the horizon, a reachable unsatisfied obligation whose deadline extends beyond the explored prefix reports `incomplete`; a response already seen in its partial window does not remain pending. Cover and trigger results are bounded observations only.
+
+## Implementation exclusions
+
+The parser implements the grammar shown above, typed two-state Boolean/bitvector expressions, finite `after`/`within` ensures, `at_trigger`, `unsigned`, `signed`, `resize`, and `ite`. It deliberately rejects `prev`, four-state literals, unbounded temporal operators, arbitrary function calls, multi-clock contracts, composition, and full RTL/SystemVerilog elaboration. The explicit transition model is a verification input, not a claim that VeloFormal understands all Verilog constructs. Windows native Z3 execution is locally verified; Linux uses the runner's `libz3-dev` package in CI and that ABI compatibility remains CI-verified rather than assumed.

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VeloFormal;
+using VeloFormal.Language;
 
 return Command.Run(args, Console.In, Console.Out, Console.Error);
 
@@ -16,11 +17,22 @@ namespace VeloFormal
         {
             if (args.Length == 0 || args is ["--help"] or ["-h"])
             {
-                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --help");
+                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --parse-contract FILE, --check-contract FILE --model FILE [--depth N] [--timeout-ms N] [--max-queries N], --help");
                 return 0;
             }
             try
             {
+                if (args.Contains("--parse-contract", StringComparer.Ordinal))
+                {
+                    output.WriteLine(JsonSerializer.Serialize(ContractCommand.Parse(args), JsonOptions));
+                    return 0;
+                }
+                if (args.Contains("--check-contract", StringComparer.Ordinal))
+                {
+                    var solverReport = ContractCommand.Check(args);
+                    output.WriteLine(JsonSerializer.Serialize(solverReport, JsonOptions));
+                    return solverReport.Status == "bounded-pass" ? 0 : solverReport.Status == "unknown" ? 3 : 1;
+                }
                 if (args.Contains("--vcd", StringComparer.Ordinal))
                 {
                     var wave = WaveformCommand.Read(args, input);
@@ -45,7 +57,7 @@ namespace VeloFormal
                 output.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
                 return report.Status == "trace-pass" ? 0 : 1;
             }
-            catch (Exception exception) when (exception is InputException or IOException or UnauthorizedAccessException or ArgumentException)
+            catch (Exception exception) when (exception is InputException or LanguageException or IOException or UnauthorizedAccessException or ArgumentException)
             {
                 error.WriteLine($"veloformal: {exception.Message}");
                 return 2;
