@@ -17,11 +17,16 @@ namespace VeloFormal
         {
             if (args.Length == 0 || args is ["--help"] or ["-h"])
             {
-                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --parse-contract FILE, --check-contract FILE --model FILE [--depth N] [--timeout-ms N] [--max-queries N], --help");
+                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --parse-contract FILE, --format-contract FILE, --check-contract FILE --model FILE [--depth N] [--timeout-ms N] [--max-queries N], --help");
                 return 0;
             }
             try
             {
+if (args.Contains("--format-contract", StringComparer.Ordinal))
+                {
+                    output.Write(ContractCommand.Format(args));
+                    return 0;
+                }
                 if (args.Contains("--parse-contract", StringComparer.Ordinal))
                 {
                     output.WriteLine(JsonSerializer.Serialize(ContractCommand.Parse(args), JsonOptions));

@@ -11,6 +11,12 @@ namespace VeloFormal;
 /// </summary>
 internal static class ContractCommand
 {
+    internal static string Format(string[] args)
+    {
+        string path = RequiredValue(args, "--format-contract");
+        RejectUnknown(args, "--format-contract");
+        return ContractFormatter.Format(ContractParser.Parse(Read(path), path));
+    }
     internal static object Parse(string[] args)
     {
         string path = RequiredValue(args, "--parse-contract");
