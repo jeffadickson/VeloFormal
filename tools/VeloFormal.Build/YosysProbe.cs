@@ -30,15 +30,19 @@ public static class YosysProbe
             var start = new ProcessStartInfo(executable, "--version") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
             using var process = Process.Start(start);
             if (process is null) return new(tool.Name, tool.EnvironmentVariable, executable, false, null, "process did not start");
+            // Begin draining both redirected streams before waiting: an unexpected
+            // verbose version banner must not fill a pipe and masquerade as a timeout.
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
+            Task<string> standardError = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(10000))
             {
                 process.Kill(entireProcessTree: true);
                 return new(tool.Name, tool.EnvironmentVariable, executable, false, null, "version probe timed out");
             }
-            string version = (process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd()).Trim();
+            string version = (standardOutput.GetAwaiter().GetResult() + standardError.GetAwaiter().GetResult()).Trim();
             return new(tool.Name, tool.EnvironmentVariable, executable, process.ExitCode == 0, string.IsNullOrWhiteSpace(version) ? null : version, process.ExitCode == 0 ? null : "version probe exited " + process.ExitCode);
         }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException)
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException or ArgumentException)
         {
             return new(tool.Name, tool.EnvironmentVariable, executable, false, null, exception.Message);
         }
