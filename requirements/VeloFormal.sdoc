@@ -72,6 +72,8 @@ RATIONALE: Shared syntax alone is not behavioral or formal semantic conformance.
 RELATIONS:
 - TYPE: File
   VALUE: docs/yosys-compatibility-program.md
+- TYPE: URL
+  VALUE: https://github.com/jeffadickson/VeloFormal/issues/1
 - TYPE: File
   VALUE: src/VeloHdl/VeloSimNormalizedTranslator.cs
 - TYPE: File

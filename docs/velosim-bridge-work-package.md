@@ -91,3 +91,7 @@ records the VeloHdl envelope/IR version, available VeloSim revision, minimized
 fixture or reproducer, expected and observed behavior, and whether the finding is
 simulation-only, formal-only, or cross-tool. This makes the work transferable to
 VeloSim without treating an unverified suspicion as a defect.
+
+Confirmed current handoff: [issue #1](https://github.com/jeffadickson/VeloFormal/issues/1)
+records the difference between VeloSim's present strict normalized producer and
+the prospective VeloHdl Stage-1 fixture grammar.

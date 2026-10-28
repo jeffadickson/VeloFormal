@@ -17,6 +17,8 @@ typed arithmetic, muxes, and explicit-width comparisons. The local machine did
 not have `yosys`, `yosys-smtbmc`, `sby`, `iverilog`, `verilator`, or `slang` on
 2026-10-28, so no Yosys differential outcome is claimed.
 
+The current VeloSim producer gap is tracked in [VeloFormal issue #1](https://github.com/jeffadickson/VeloFormal/issues/1).
+
 ## Compatibility ladder
 
 | Stage | Capability | Qualification evidence |
@@ -47,4 +49,6 @@ approximated.
 
 Install or obtain a pinned Yosys/SymbiYosys environment, then qualify Stage 1
 using small register/mux/comparator fixtures before enabling any claim of
-Yosys-compatible behavior.
+Yosys-compatible behavior. Resolve issue #1 with a clean, pinned VeloSim
+normalized structural artifact before calling the prospective fixture grammar a
+VeloSim integration.
