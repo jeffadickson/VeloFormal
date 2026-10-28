@@ -270,6 +270,20 @@ focused Build-option/bridge test run. The five result artifacts were
 `artifacts/yosys-stage1/`. This is a reproducibility checkpoint for the tested
 fixture set, not a claim that untested Stage-1 operators or frontends conform.
 
+## Matrix-focused coverage
+
+Coverlet plus ReportGenerator was run after the matrix runner and paired
+fixtures were added, using only `BuildOptionTests` and `VeloHdlAdapterTests`.
+The 54 selected tests passed with no failures or skips. The local report is
+`artifacts/coverage/stage1-matrix-focused-20261028/report/`: 50.2% line
+(908/1806), 43.2% branch (1088/2516), and 56.3% method (164/291) coverage
+across VeloFormal, VeloFormal.Cli, VeloHdl, and VeloFormal.Build. Within that
+focused scope, VeloHdl line coverage was 91.9% and its normalized translator
+was 90.4%; the build helper was only 24.5% because its subprocess error paths
+and matrix branches were not all induced. This focused metric is not comparable
+to earlier full-suite coverage figures and does not measure external SBY child
+processes as managed code.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,
