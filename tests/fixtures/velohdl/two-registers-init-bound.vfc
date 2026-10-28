@@ -1,0 +1,5 @@
+contract TwoRegistersInitBound for two_registers_init
+    clock posedge clk
+    require reset_inactive: rst_n
+    invariant b_ne_three: b != 2'd3
+end

@@ -303,6 +303,23 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void InitializedTwoRegisterFixturePreservesConcurrentNonblockingReads()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "two-registers-init.sv"));
+        string normalized = File.ReadAllText(Path.Combine(fixtureDirectory, "two-registers-init.normalized.json"));
+        string contractText = File.ReadAllText(Path.Combine(fixtureDirectory, "two-registers-init-bound.vfc"));
+        var provenance = StructuralProvenance.Create(source, "VeloHdlFixture", "stage1-fixture", normalized);
+        var model = VeloHdlAdapter.ToTransitionModel(VeloSimNormalizedTranslator.Translate(normalized, provenance, "two_registers_init"));
+        var report = BoundedChecker.Check(SemanticBinder.Bind(ContractParser.Parse(contractText), model), new SolverOptions(Depth: 3));
+        Assert.Equal("counterexample", report.Status);
+        Assert.Equal("0", report.Counterexample![0].Values["a"]);
+        Assert.Equal("0", report.Counterexample[0].Values["b"]);
+        Assert.Equal("1", report.Counterexample[1].Values["a"]);
+        Assert.Equal("3", report.Counterexample[1].Values["b"]);
+    }
+
+    [Fact]
     public void LowersNegativeSignedConstantsWithinTheirMathematicalRange()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));

@@ -12,6 +12,7 @@ public static class YosysStage1
     private static readonly FixtureDefinition Positive = new("signed-compare-pass.sby", "signed-compare.sv", "PASS");
     private static readonly FixtureDefinition DeterministicNegative = new("counter-init-bound.sby", "counter-init.sv", "FAIL");
     private static readonly FixtureDefinition SignedDeterministicNegative = new("signed-init-bound.sby", "signed-init.sv", "FAIL");
+    private static readonly FixtureDefinition ConcurrentNegative = new("two-registers-init-bound.sby", "two-registers-init.sv", "FAIL");
 
     /// <summary>
     /// Runs the fixture's bounded SymbiYosys job. Its expected assertion failure
@@ -31,6 +32,10 @@ public static class YosysStage1
     /// <summary>Runs the initialized signed comparison/negation counterexample fixture for cross-tool witness comparison.</summary>
     public static int RunSignedDeterministicNegative(string root, TextWriter output, TextWriter error)
         => RunFixture(root, output, error, SignedDeterministicNegative);
+
+    /// <summary>Runs the two-register concurrent nonblocking-update fixture for cross-tool witness comparison.</summary>
+    public static int RunConcurrentNegative(string root, TextWriter output, TextWriter error)
+        => RunFixture(root, output, error, ConcurrentNegative);
 
     private static int RunFixture(string root, TextWriter output, TextWriter error, FixtureDefinition fixture)
     {

@@ -239,6 +239,23 @@ and raw status `FAIL 2 0`. Its VCD begins with signed bit patterns `0xff`,
 `0x01`, and `0x00`, matching the VeloFormal prefix through the same pre-NBA
 clocked-assertion convention recorded for `counter-init`.
 
+## Concurrent nonblocking-update replay fixture
+
+`two-registers-init` is the first paired external fixture with two concurrent
+state processes. From complete initialization `(a,b)=(0,0)` and constrained
+inactive reset, it updates `a` to `a + 1` while independently assigning
+`b <= a ^ 3`. Both the VeloFormal counterexample and SBY VCD therefore show
+`(a,b)=(0,0)`, `(1,3)`, `(2,2)`; the middle state distinguishes proper
+nonblocking prior-state reads from an accidental sequential update.
+
+The release build and focused Build-option/bridge tests completed with 54
+passed, 0 failed, and 0 skipped tests. The pinned
+`yosys-stage1-concurrent` runner wrote
+`artifacts/yosys-stage1/20261028-145629-3212792/result.json` with expected
+`FAIL`, raw status `FAIL 2 0`, source hash
+`d5ee002acb7fb29a5371080722029cd687fca43214ae826d26293ebe34590d27`, and
+SBY-script hash `f70e7571c44ad4888dae4766e3f91e3680f14e6da7ea65f31eec2ef50bb0b137`.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,

@@ -1,0 +1,10 @@
+[options]
+mode bmc
+depth 3
+[engines]
+smtbmc z3
+[script]
+read -formal -sv two-registers-init.sv
+prep -top two_registers_init
+[files]
+two-registers-init.sv

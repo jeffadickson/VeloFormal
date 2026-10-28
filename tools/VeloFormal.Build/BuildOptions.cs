@@ -1,7 +1,7 @@
 namespace VeloFormal.Build;
 public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRestore = false)
 {
-    public const string Usage = "usage: dotnet run --project tools/VeloFormal.Build -- [test|coverage|rtl|yosys-probe|yosys-stage1|yosys-stage1-positive|yosys-stage1-deterministic|yosys-stage1-signed] [--no-build] [--no-restore]";
+    public const string Usage = "usage: dotnet run --project tools/VeloFormal.Build -- [test|coverage|rtl|yosys-probe|yosys-stage1|yosys-stage1-positive|yosys-stage1-deterministic|yosys-stage1-signed|yosys-stage1-concurrent] [--no-build] [--no-restore]";
     public static BuildOptions Parse(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -10,7 +10,7 @@ public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRest
         var flags = new HashSet<string>(StringComparer.Ordinal);
         foreach (string argument in args)
         {
-            if (argument is "test" or "coverage" or "rtl" or "yosys-probe" or "yosys-stage1" or "yosys-stage1-positive" or "yosys-stage1-deterministic" or "yosys-stage1-signed")
+            if (argument is "test" or "coverage" or "rtl" or "yosys-probe" or "yosys-stage1" or "yosys-stage1-positive" or "yosys-stage1-deterministic" or "yosys-stage1-signed" or "yosys-stage1-concurrent")
             {
                 if (mode is not null) throw new InputException("specify one build mode");
                 mode = argument;
@@ -22,7 +22,7 @@ public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRest
             else throw new InputException($"unknown build argument: {argument}");
         }
         mode ??= "test";
-        if (mode is "rtl" or "yosys-probe" or "yosys-stage1" or "yosys-stage1-positive" or "yosys-stage1-deterministic" or "yosys-stage1-signed" && flags.Count != 0) throw new InputException("build flags do not apply to this mode");
+        if (mode is "rtl" or "yosys-probe" or "yosys-stage1" or "yosys-stage1-positive" or "yosys-stage1-deterministic" or "yosys-stage1-signed" or "yosys-stage1-concurrent" && flags.Count != 0) throw new InputException("build flags do not apply to this mode");
         return new(mode, flags.Contains("--no-build"), flags.Contains("--no-restore"));
     }
 }

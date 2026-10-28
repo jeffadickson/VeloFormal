@@ -101,6 +101,10 @@ The repository contains paired, source-controlled inputs under
   counter prefix. Its SBY depth is one step greater than VeloFormal's source
   state-frame depth because an `always_ff` assertion samples pre-NBA state while
   the emitted SBY VCD records the post-NBA state at that edge;
+- `two-registers-init.sv`, `two-registers-init.normalized.json`,
+  `two-registers-init-bound.vfc`, and `two-registers-init-bound.sby`: a
+  complete-initial-state two-register fixture that verifies concurrent
+  nonblocking reads (`b` consumes the prior value of `a`);
 - `signed-compare.sv`, `signed-compare.normalized.json`, and
   `signed-compare.vfc`: prospective VeloHdl signed reset, comparison, and
   unary-negation semantics;
