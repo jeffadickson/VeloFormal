@@ -116,6 +116,13 @@ branch coverage across the four measured assemblies. The lower aggregate metric
 is a scope artifact (the Build helper assembly is included); it is not
 comparable to earlier three-assembly or full-suite figures.
 
+The SharpFuzz target was extended to feed arbitrary UTF-8 to the
+provenance-bound normalized VeloHdl translator in addition to the contract
+parser. `dotnet build fuzz/VeloFormal.Fuzz/VeloFormal.Fuzz.csproj -c Release
+--no-restore` succeeded on 2026-10-28. No coverage-guided AFL++ or libFuzzer
+campaign was run on this Windows host, so there is no fuzz execution count,
+seed, corpus, or coverage result to claim.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
