@@ -57,9 +57,25 @@ RELATIONS:
 - TYPE: File
   VALUE: tests/VeloFormal.Tests/VeloHdlAdapterTests.cs
 - TYPE: File
+  VALUE: docs/verification/velohdl-stage1-pre-differential.md
+- TYPE: File
   VALUE: tests/VeloFormal.Tests/ContractCliTests.cs
 - TYPE: File
   VALUE: docs/verification/velohdl-bridge-v1.md
+
+[REQUIREMENT]
+UID: VF-RTL-002
+STATUS: Draft
+TITLE: Qualify Yosys-compatible RTL subsets by differential evidence
+STATEMENT: VeloFormal shall claim compatibility with a Yosys formal RTL subset only when version-pinned differential fixtures establish equivalent declared semantics and verification outcomes.
+RATIONALE: Shared syntax alone is not behavioral or formal semantic conformance.
+RELATIONS:
+- TYPE: File
+  VALUE: docs/yosys-compatibility-program.md
+- TYPE: File
+  VALUE: src/VeloHdl/VeloSimNormalizedTranslator.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/VeloHdlAdapterTests.cs
 
 [[/SECTION]]
 

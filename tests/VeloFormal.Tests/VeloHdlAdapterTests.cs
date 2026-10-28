@@ -85,6 +85,43 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersExplicitWidthComparisonConditions()
+    {
+        const string normalized = """
+            {"format":"velohdl.normalized.v1","signals":[{"name":"clk","width":1},{"name":"rst_n","width":1},{"name":"count","width":8}],"processes":[{"kind":"always_ff","event":{"edge":"posedge","signal":"clk"},"body":{"kind":"if","condition":{"kind":"not","operand":{"kind":"ref","name":"rst_n"}},"then":{"kind":"nba","target":"count","value":{"kind":"const","value":0}},"else":{"kind":"nba","target":"count","value":{"kind":"ite","condition":{"kind":"lt","width":8,"lhs":{"kind":"ref","name":"count"},"rhs":{"kind":"const","value":3}},"then":{"kind":"add","lhs":{"kind":"ref","name":"count"},"rhs":{"kind":"const","value":1}},"else":{"kind":"const","value":0}}}}}]}
+            """;
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Contains("count < 8'd3", lowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant well_formed: true\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 5)).Status);
+        string missingWidth = normalized.Replace("\"kind\":\"lt\",\"width\":8", "\"kind\":\"lt\"", StringComparison.Ordinal);
+        var badProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", missingWidth);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(missingWidth, badProvenance, "counter"));
+    }
+
+    [Theory]
+    [InlineData("mul", "*", 2)]
+    [InlineData("shl", "<<", 1)]
+    [InlineData("shr", ">>", 1)]
+    public void LowersWidthExplicitArithmeticOperators(string normalizedKind, string expectedOperator, int operand)
+    {
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        string normalized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("\"kind\":\"add\"", "\"kind\":\"" + normalizedKind + "\"", StringComparison.Ordinal)
+            .Replace("\"value\":1", "\"value\":" + operand, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter");
+        using var document = JsonDocument.Parse(design.ModelJson());
+        Assert.Contains("count " + expectedOperator + " 8'd" + operand, document.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant well_formed: true\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 2)).Status);
+    }
+
+    [Fact]
     public void RejectsUnsupportedOrOutOfRangeNormalizedExpressions()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
@@ -96,6 +133,19 @@ public sealed class VeloHdlAdapterTests
             var provenance = StructuralProvenance.Create("module counter;", "VeloSim", "fixture", candidate);
             Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(candidate, provenance, "counter"));
         }
+    }
+
+    [Fact]
+    public void RejectsBitvectorStateAsABooleanCondition()
+    {
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        const string increment = "{\"kind\":\"add\",\"lhs\":{\"kind\":\"ref\",\"name\":\"count\"},\"rhs\":{\"kind\":\"const\",\"value\":1}}";
+        const string badCondition = "{\"kind\":\"ite\",\"condition\":{\"kind\":\"ref\",\"name\":\"count\"},\"then\":{\"kind\":\"const\",\"value\":1},\"else\":{\"kind\":\"const\",\"value\":0}}";
+        string normalized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("\"name\":\"count\",\"width\":8", "\"name\":\"count\",\"width\":1", StringComparison.Ordinal)
+            .Replace(increment, badCondition, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter"));
     }
 
     [Fact]
@@ -171,11 +221,18 @@ public sealed class VeloHdlAdapterTests
             string contractPath = Path.Combine(directory, "two.vfc");
             File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "two-registers.normalized.json"), normalizedPath);
             File.WriteAllText(sourcePath, "module two; endmodule\n");
+            using (var rejectedOutput = new StringWriter())
+            using (var rejectedError = new StringWriter())
+            {
+                Assert.Equal(2, Command.Run(["--translate-velosim-normalized", normalizedPath, "--module", "two", "--source", sourcePath, "--frontend-revision", "fixture"], TextReader.Null, rejectedOutput, rejectedError));
+                Assert.StartsWith("veloformal:", rejectedError.ToString());
+            }
             using (var output = new StringWriter())
             using (var error = new StringWriter())
             {
-                int code = Command.Run(["--translate-velosim-normalized", normalizedPath, "--module", "two", "--source", sourcePath, "--frontend-revision", "fixture"], TextReader.Null, output, error);
+                int code = Command.Run(["--translate-velohdl-normalized", normalizedPath, "--module", "two", "--source", sourcePath, "--frontend-revision", "fixture"], TextReader.Null, output, error);
                 Assert.Equal(0, code); Assert.Empty(error.ToString()); File.WriteAllText(modelPath, output.ToString());
+                Assert.Equal("VeloHdlFixture", StructuralDesign.Parse(output.ToString()).Provenance.Frontend);
             }
             File.WriteAllText(contractPath, "contract C for two\n    clock posedge clk\n    invariant ranges: a <= 2'd3 && b <= 2'd3\nend\n");
             using var checkOutput = new StringWriter(); using var checkError = new StringWriter();
@@ -198,5 +255,27 @@ public sealed class VeloHdlAdapterTests
         var provenance = StructuralProvenance.Create("module counter;", "VeloSim", "fa7cd2f", normalized);
         var model = VeloHdlAdapter.ToTransitionModel(VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter"));
         return model.Signals.Single(signal => signal.Name == "count").Type.Width == width;
+    }
+
+    /// <summary>Comparison widths and constants must remain explicit over the supported bitvector range.</summary>
+    [Property(MaxTest = 100, Replay = "281028,44017")]
+    public bool PreservesRandomizedComparisonWidths(PositiveInt rawWidth, NonNegativeInt rawConstant)
+    {
+        int width = (rawWidth.Get - 1) % 256 + 1;
+        BigInteger modulus = BigInteger.One << width;
+        BigInteger constant = rawConstant.Get % modulus;
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        const string increment = "{\"kind\":\"add\",\"lhs\":{\"kind\":\"ref\",\"name\":\"count\"},\"rhs\":{\"kind\":\"const\",\"value\":1}}";
+        string conditional = "{\"kind\":\"ite\",\"condition\":{\"kind\":\"le\",\"width\":" + width +
+            ",\"lhs\":{\"kind\":\"ref\",\"name\":\"count\"},\"rhs\":{\"kind\":\"const\",\"value\":" + constant +
+            "}},\"then\":{\"kind\":\"ref\",\"name\":\"count\"},\"else\":{\"kind\":\"const\",\"value\":0}}";
+        string normalized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("\"name\":\"count\",\"width\":8", "\"name\":\"count\",\"width\":" + width, StringComparison.Ordinal)
+            .Replace(increment, conditional, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module count;", "VeloHdlFixture", "property", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "count");
+        using var document = JsonDocument.Parse(design.ModelJson());
+        string next = document.RootElement.GetProperty("next").GetProperty("count").GetString()!;
+        return next.Contains($"count <= {width}'d{constant}", StringComparison.Ordinal);
     }
 }

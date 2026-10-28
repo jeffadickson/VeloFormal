@@ -38,8 +38,11 @@ The VeloHdl fixture grammar has:
 - one `if (!reset)` body per process, whose reset branch is a nonblocking write
   of zero and whose else branch is a nonblocking write to the same destination;
 - one unique destination per process (multiple writers are rejected);
-- else expressions formed from `const`, `ref`, `not`, `add`, `sub`, `and`,
-  `or`, `xor`, and `ite`.
+- else expressions formed from `const`, `ref`, `not`, `add`, `sub`, `mul`,
+  `and`, `or`, `xor`, `shl`, `shr`, and `ite`;
+- `ite` conditions formed from scalar `ref`, `not`, Boolean `and`/`or`, and
+  `eq`, `ne`, `lt`, `le`, `gt`, or `ge`. Comparisons carry an explicit
+  `width` from 1 through 256.
 
 Every state destination is an unsigned bitvector. Non-state scalar signals are
 Boolean controls; other non-state signals are unsigned bitvectors. Constants

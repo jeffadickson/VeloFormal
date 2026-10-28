@@ -31,7 +31,8 @@ public static class VeloSimNormalizedTranslator
             var processes = root.GetProperty("processes");
             if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() is < 1 or > 256)
                 throw new InvalidDataException("One through 256 synchronous processes are required.");
-            var lowered = processes.EnumerateArray().Select(process => ParseSynchronousProcess(process, signals)).ToArray();
+            var stateNames = processes.EnumerateArray().Select(Destination).ToHashSet(StringComparer.Ordinal);
+            var lowered = processes.EnumerateArray().Select(process => ParseSynchronousProcess(process, signals, stateNames)).ToArray();
             string clock = lowered[0].Clock;
             string reset = lowered[0].Reset;
             if (lowered.Any(process => process.Clock != clock || process.Reset != reset))
@@ -71,7 +72,7 @@ public static class VeloSimNormalizedTranslator
         return (name, width);
     }
 
-    private static (string Clock, string Reset, (string Name, int Width) State, string Next) ParseSynchronousProcess(JsonElement process, (string Name, int Width)[] signals)
+    private static (string Clock, string Reset, (string Name, int Width) State, string Next) ParseSynchronousProcess(JsonElement process, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames)
     {
         Fields(process, "kind", "event", "body");
         if (Text(process, "kind") != "always_ff") throw new InvalidDataException("Only always_ff is supported.");
@@ -92,7 +93,7 @@ public static class VeloSimNormalizedTranslator
         var match = signals.SingleOrDefault(s => s.Name == target);
         if (string.IsNullOrEmpty(match.Name) || signals.SingleOrDefault(s => s.Name == clock).Width != 1 || signals.SingleOrDefault(s => s.Name == reset).Width != 1) throw new InvalidDataException("Clock, reset, or state signal is invalid.");
         Constant(then.GetProperty("value"), 0);
-        return (clock, reset, match, Expression(otherwise.GetProperty("value"), signals, match.Width));
+        return (clock, reset, match, Expression(otherwise.GetProperty("value"), signals, stateNames, match.Width));
     }
 
     private static void Constant(JsonElement value, int expected)
@@ -100,6 +101,16 @@ public static class VeloSimNormalizedTranslator
         Fields(value, "kind", "value");
         if (Text(value, "kind") != "const" || value.GetProperty("value").GetInt32() != expected)
             throw new InvalidDataException("Unsupported counter constant.");
+    }
+
+    private static string Destination(JsonElement process)
+    {
+        if (process.ValueKind != JsonValueKind.Object || !process.TryGetProperty("body", out var body) ||
+            body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("then", out var then) ||
+            then.ValueKind != JsonValueKind.Object || !then.TryGetProperty("target", out var target) ||
+            target.ValueKind != JsonValueKind.String || target.GetString() is not { } name)
+            throw new InvalidDataException("Unsupported normalized UHDM shape.");
+        return name;
     }
 
     private static bool IsCurrentVeloSimV1Counter(JsonElement processes, (string Clock, string Reset, (string Name, int Width) State, string Next)[] lowered)
@@ -120,7 +131,7 @@ public static class VeloSimNormalizedTranslator
     /// VeloFormal expression language. Width-changing references are explicit,
     /// preventing accidental host-integer or implicit sign-extension semantics.
     /// </summary>
-    private static string Expression(JsonElement value, (string Name, int Width)[] signals, int resultWidth)
+    private static string Expression(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames, int resultWidth)
     {
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Normalized expression must be an object.");
         string kind = Text(value, "kind");
@@ -145,21 +156,83 @@ public static class VeloSimNormalizedTranslator
         if (kind == "not")
         {
             Fields(value, "kind", "operand");
-            return $"~({Expression(value.GetProperty("operand"), signals, resultWidth)})";
+            return $"~({Expression(value.GetProperty("operand"), signals, stateNames, resultWidth)})";
         }
-        if (kind is "add" or "sub" or "and" or "or" or "xor")
+        if (kind is "add" or "sub" or "mul" or "and" or "or" or "xor" or "shl" or "shr")
         {
             Fields(value, "kind", "lhs", "rhs");
-            string op = kind switch { "add" => "+", "sub" => "-", "and" => "&", "or" => "|", "xor" => "^", _ => throw new InvalidOperationException() };
-            return $"({Expression(value.GetProperty("lhs"), signals, resultWidth)} {op} {Expression(value.GetProperty("rhs"), signals, resultWidth)})";
+            string op = kind switch
+            {
+                "add" => "+", "sub" => "-", "mul" => "*", "and" => "&", "or" => "|", "xor" => "^",
+                "shl" => "<<", "shr" => ">>", _ => throw new InvalidOperationException()
+            };
+            return $"({Expression(value.GetProperty("lhs"), signals, stateNames, resultWidth)} {op} {Expression(value.GetProperty("rhs"), signals, stateNames, resultWidth)})";
         }
         if (kind == "ite")
         {
             Fields(value, "kind", "condition", "then", "else");
-            string condition = Expression(value.GetProperty("condition"), signals, 1);
-            return $"ite({condition}, {Expression(value.GetProperty("then"), signals, resultWidth)}, {Expression(value.GetProperty("else"), signals, resultWidth)})";
+            string condition = Condition(value.GetProperty("condition"), signals, stateNames);
+            return $"ite({condition}, {Expression(value.GetProperty("then"), signals, stateNames, resultWidth)}, {Expression(value.GetProperty("else"), signals, stateNames, resultWidth)})";
         }
         throw new InvalidDataException("Unsupported normalized expression kind.");
+    }
+
+    /// <summary>
+    /// Lowers the Boolean control grammar separately from bitvector expressions.
+    /// Comparisons require an explicit width so constants have no hidden host-width
+    /// interpretation, matching the width-explicit rule for state expressions.
+    /// </summary>
+    private static string Condition(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames)
+    {
+        if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Normalized condition must be an object.");
+        string kind = Text(value, "kind");
+        if (kind == "ref")
+        {
+            Fields(value, "kind", "name");
+            string name = Text(value, "name");
+            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (string.IsNullOrEmpty(signal.Name) || signal.Width != 1 || stateNames.Contains(name))
+                throw new InvalidDataException("Condition references must be scalar input signals.");
+            return name;
+        }
+        if (kind == "not")
+        {
+            Fields(value, "kind", "operand");
+            return $"!({Condition(value.GetProperty("operand"), signals, stateNames)})";
+        }
+        if (kind is "and" or "or")
+        {
+            Fields(value, "kind", "lhs", "rhs");
+            string op = kind == "and" ? "&&" : "||";
+            return $"({Condition(value.GetProperty("lhs"), signals, stateNames)} {op} {Condition(value.GetProperty("rhs"), signals, stateNames)})";
+        }
+        if (kind is "eq" or "ne" or "lt" or "le" or "gt" or "ge")
+        {
+            Fields(value, "kind", "width", "lhs", "rhs");
+            var width = value.GetProperty("width");
+            if (width.ValueKind != JsonValueKind.Number || !width.TryGetInt32(out int bits) || bits is < 1 or > 256)
+                throw new InvalidDataException("Comparison width must be from 1 through 256.");
+            string op = kind switch { "eq" => "==", "ne" => "!=", "lt" => "<", "le" => "<=", "gt" => ">", "ge" => ">=", _ => throw new InvalidOperationException() };
+            return $"({ComparisonOperand(value.GetProperty("lhs"), signals, stateNames, bits)} {op} {ComparisonOperand(value.GetProperty("rhs"), signals, stateNames, bits)})";
+        }
+        throw new InvalidDataException("Unsupported normalized condition kind.");
+    }
+
+    private static string ComparisonOperand(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames, int width)
+    {
+        if (value.ValueKind == JsonValueKind.Object && Text(value, "kind") == "ref")
+        {
+            Fields(value, "kind", "name");
+            string name = Text(value, "name");
+            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (string.IsNullOrEmpty(signal.Name)) throw new InvalidDataException("Expression references an unknown signal.");
+            if (signal.Width == 1 && !stateNames.Contains(name))
+            {
+                if (width != 1) throw new InvalidDataException("Boolean controls can only be compared at width one.");
+                return $"ite({name}, 1'd1, 1'd0)";
+            }
+        }
+        return Expression(value, signals, stateNames, width);
     }
 
     private static void Fields(JsonElement value, params string[] names)

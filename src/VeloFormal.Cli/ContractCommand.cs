@@ -43,13 +43,28 @@ internal static class ContractCommand
 
     internal static string TranslateVeloSimNormalized(string[] args)
     {
-        string normalizedPath = RequiredValue(args, "--translate-velosim-normalized");
+        return TranslateNormalized(args, "--translate-velosim-normalized", "velosim.uhdm.normalized.v1", "VeloSim");
+    }
+
+    /// <summary>Translates the separately versioned prospective VeloHdl fixture grammar.</summary>
+    internal static string TranslateVeloHdlNormalized(string[] args)
+    {
+        return TranslateNormalized(args, "--translate-velohdl-normalized", "velohdl.normalized.v1", "VeloHdlFixture");
+    }
+
+    private static string TranslateNormalized(string[] args, string option, string expectedFormat, string frontend)
+    {
+        string normalizedPath = RequiredValue(args, option);
         string module = RequiredValue(args, "--module");
         string sourcePath = RequiredValue(args, "--source");
         string revision = RequiredValue(args, "--frontend-revision");
-        RejectUnknown(args, "--translate-velosim-normalized", "--module", "--source", "--frontend-revision");
+        RejectUnknown(args, option, "--module", "--source", "--frontend-revision");
         string normalized = Read(normalizedPath);
-        var provenance = StructuralProvenance.Create(Read(sourcePath), "VeloSim", revision, normalized);
+        using var document = JsonDocument.Parse(normalized);
+        if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("format", out var format) ||
+            format.ValueKind != JsonValueKind.String || format.GetString() != expectedFormat)
+            throw new InvalidDataException($"{option} requires {expectedFormat} input.");
+        var provenance = StructuralProvenance.Create(Read(sourcePath), frontend, revision, normalized);
         return VeloSimNormalizedTranslator.Translate(normalized, provenance, module).ToJson();
     }
 

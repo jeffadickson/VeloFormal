@@ -67,6 +67,8 @@ VeloSim's normalized UHDM counter/reset subset can be bridged through a versione
 provenance-carrying VeloHdl envelope; see the [bridge work package](docs/velosim-bridge-work-package.md). This is a deliberately limited synchronous subset, not general SystemVerilog elaboration.
 The exact v1 envelope and its accepted normalized-UHDM subset are specified in
 [VeloHdl structural envelope v1](docs/velohdl-structural-v1.md).
+The staged path toward qualified Yosys/SymbiYosys compatibility is recorded in
+[the VeloHdl compatibility program](docs/yosys-compatibility-program.md).
 
 ## Python compatibility reference
 
