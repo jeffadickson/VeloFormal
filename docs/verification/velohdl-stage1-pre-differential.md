@@ -87,6 +87,15 @@ ReportGenerator evidence is under
 branch coverage across the three measured assemblies. A future external run
 must add version-pinned Yosys/SymbiYosys status and witnesses separately.
 
+The prepared negative differential fixture was checked locally through the
+same source/normalized provenance binding and VeloFormal BMC: 25 focused bridge
+tests passed, and its `count < 2` contract produced the expected
+`counterexample` status at depth 3. The corresponding `.sby` script is
+checked in but was not run because SymbiYosys is unavailable. Focused coverage
+is at `artifacts/coverage/stage1-negative-focused-20261028/`: 52.9% line and
+41.5% branch coverage across the measured assemblies. It is not external
+differential evidence.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

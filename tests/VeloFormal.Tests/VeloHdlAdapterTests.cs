@@ -208,6 +208,24 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void PairedCounterBoundFixtureProducesTheExpectedBoundedCounterexample()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "counter.sv"));
+        string normalized = File.ReadAllText(Path.Combine(fixtureDirectory, "counter.normalized.json"));
+        string contractText = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-bound.vfc"));
+        string sby = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-bound.sby"));
+        Assert.Contains("assert (count < 8'd2)", source, StringComparison.Ordinal);
+        Assert.Contains("mode bmc", sby, StringComparison.Ordinal);
+        Assert.Contains("depth 3", sby, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create(source, "VeloSim", "stage1-fixture", normalized);
+        var model = VeloHdlAdapter.ToTransitionModel(VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter"));
+        var report = BoundedChecker.Check(SemanticBinder.Bind(ContractParser.Parse(contractText), model), new SolverOptions(Depth: 3));
+        Assert.Equal("counterexample", report.Status);
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), report.InputProvenance?.SourceSha256);
+    }
+
+    [Fact]
     public void LowersNegativeSignedConstantsWithinTheirMathematicalRange()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));

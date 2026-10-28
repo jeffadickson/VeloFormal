@@ -1,0 +1,4 @@
+contract CounterBound for counter
+    clock posedge clk
+    invariant count_below_two: count < 8'd2
+end

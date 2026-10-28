@@ -24,3 +24,4 @@ artifacts/
 !tests/fixtures/velohdl/*.json
 !tests/fixtures/velohdl/*.sv
 !tests/fixtures/velohdl/*.vfc
+!tests/fixtures/velohdl/*.sby
