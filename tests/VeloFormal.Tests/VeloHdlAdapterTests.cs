@@ -171,6 +171,19 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersSignedNormalizedRightShiftAsLogical()
+    {
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        string normalized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":true}", StringComparison.Ordinal)
+            .Replace("\"kind\":\"add\"", "\"kind\":\"shr\"", StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Contains("signed(unsigned(count) >> unsigned(8'sd1))", lowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LowersExplicitSignedStateArithmeticWithoutImplicitMixedOperands()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
