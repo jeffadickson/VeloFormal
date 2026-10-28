@@ -140,13 +140,61 @@ focused suite produced
 39.3% branch coverage across four assemblies. This deterministic property test
 complements but does not substitute for the unrun coverage-guided fuzz campaign.
 
+## First pinned external fixture executions
+
+On 2026-10-28, an isolated official OSS CAD Suite Windows x64 archive tagged
+`2026-10-28` was extracted outside the checkout. Its archive SHA-256 was
+`eb97af9e5d0b195e570c6a7ee3d29c005bcc60e343d48cb713ef414e4a39e766`.
+The probe artifact `artifacts/yosys-probe/20261028-143956-0230970/toolchain.json`
+recorded Yosys, `yosys-smtbmc`, and SBY as available, and Slang as unavailable.
+Yosys reported `0.70+255` (`72b0054f0`); SBY reported `v0.70-9-g79fc9ed`.
+The suite's `bin` and `lib` directories were supplied only to child processes;
+the system-wide `PATH` was not changed.
+
+The Stage-1 runner then executed `counter-bound.sby` using BMC depth 3, Z3,
+and the source-bound counter fixture. It wrote
+`artifacts/yosys-stage1/20261028-144042-8044110/result.json`, whose source hash
+is `aed71e167fdfa642606c97b57b22bfdc771e627cb7f8b5ecbabf1c27a64bc709` and
+whose SBY-script hash is
+`087cd4aae8daec7d1e7d0fd73ec7cdb372d695c1415ac18910b7e056209a6b4b`.
+SBY returned its expected bounded `FAIL` verdict (raw status `FAIL 2 0`, process
+exit 2) and retained `trace.vcd`. The runner now parses the leading verdict
+token while retaining the raw line, because current SBY adds task counters.
+
+The same bounded VeloFormal check reported `counterexample` at depth 3. It
+bound the same source hash and a normalized IR hash of
+`c091c147b9b66c6b2ccf86c50009e88bfb58c77f15f9ace2c343697f517bbaa0` in
+`artifacts/differential/20261028-144200/counter-veloformal.json`. Both engines
+therefore agree on the requested counterexample verdict. Their captured initial
+counter values differ (`253` in the SBY VCD and `128` in the VeloFormal model)
+because the property permits an unconstrained initial state; verdict agreement
+does not establish an identical witness. A constrained-init replay fixture is
+still required before claiming counterexample trace equivalence.
+
+The directly invoked positive `signed-compare-pass.sby` job used the same BMC
+depth and Z3 configuration and returned `PASS 0 0` in
+`artifacts/yosys-stage1/positive-20261028-144100/status`. Its source-bound
+VeloFormal counterpart reported `bounded-pass` at depth 3, with source hash
+`fb9b888f7b7e87e83d882045aa63553cbf892f0e3fe29b5423ad6923b731f113` and
+normalized IR hash
+`318c2cf578eae9dc19b2b0b4cee89b18e3aea671437742c28714c20568da9b3d`.
+This is a pass/pass bounded-status comparison, not a proof and not evidence
+that the prospective normalized artifact was emitted by VeloSim.
+
+These are the first external Stage-1 fixture results. They qualify neither the
+whole Stage-1 profile nor a general Yosys-compatible frontend: only two small,
+source-pinned fixtures have matched bounded statuses, and the current VeloSim
+checkout remains dirty and unqualified as a producer.
+
 ## Differential limitation
 
-At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
-`verilator`, and `slang` were unavailable on this host. No external solver,
-simulator, elaborator, trace, pass/fail comparison, or performance result is
-claimed. Install a version-pinned environment and execute the Stage-1 matrix in
-`docs/yosys-compatibility-program.md` before claiming Yosys compatibility.
+Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,
+`iverilog`, `verilator`, and `slang` were unavailable from the ordinary host
+environment. The portable suite supplies the first three only; there is still
+no Slang, Icarus, or Verilator comparison. No general external solver,
+simulator, elaborator, trace-equivalence, or performance result is claimed.
+Complete the Stage-1 matrix in `docs/yosys-compatibility-program.md` before
+claiming Yosys compatibility.
 
 The reproducible C# probe was subsequently run with:
 

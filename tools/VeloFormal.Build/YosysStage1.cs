@@ -38,10 +38,9 @@ public static class YosysStage1
         try
         {
             var start = new ProcessStartInfo(executable) { WorkingDirectory = fixtureDirectory, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
-            // An explicit portable-suite launcher must resolve its sibling Yosys
-            // executables without requiring a machine-wide PATH modification.
-            if (Path.IsPathRooted(executable))
-                start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+            // An explicit portable-suite launcher must resolve sibling Yosys
+            // executables and DLLs without requiring a machine-wide PATH change.
+            YosysProbe.ConfigurePortableSuitePath(start, executable);
             start.ArgumentList.Add("-f");
             start.ArgumentList.Add("-d");
             start.ArgumentList.Add(Path.Combine(directory, "sby"));
@@ -67,7 +66,11 @@ public static class YosysStage1
         File.WriteAllText(Path.Combine(directory, "stdout.txt"), stdout);
         File.WriteAllText(Path.Combine(directory, "stderr.txt"), stderr);
         string? statusPath = Path.Combine(directory, "sby", "status");
-        string? status = File.Exists(statusPath) ? File.ReadAllText(statusPath).Trim() : null;
+        string? rawStatus = File.Exists(statusPath) ? File.ReadAllText(statusPath).Trim() : null;
+        // Recent SBY writes a leading verdict plus task counters (for example,
+        // "FAIL 2 0"). The verdict token is the stable contract; retain the
+        // complete line separately for forensic evidence.
+        string? status = rawStatus?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         string artifact = Path.Combine(directory, "result.json");
         File.WriteAllText(artifact, JsonSerializer.Serialize(new
         {
@@ -79,6 +82,7 @@ public static class YosysStage1
             sby = executable,
             exit_code = exitCode,
             status,
+            raw_status = rawStatus,
             error = startError
         }, new JsonSerializerOptions { WriteIndented = true }) + "\n");
 

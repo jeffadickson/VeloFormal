@@ -13,7 +13,7 @@ public static class YosysProbe
         string run = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff", System.Globalization.CultureInfo.InvariantCulture);
         string directory = Path.Combine(root, "artifacts", "yosys-probe", run);
         Directory.CreateDirectory(directory);
-        var tools = new[] { new Tool("yosys", "YOSYS"), new Tool("yosys-smtbmc", "YOSYS_SMTBMC"), new Tool("sby", "SBY"), new Tool("slang", "SLANG") }.Select(Probe).ToArray();
+        var tools = new[] { new Tool("yosys", "YOSYS", "-V"), new Tool("yosys-smtbmc", "YOSYS_SMTBMC", "-h"), new Tool("sby", "SBY", "--version"), new Tool("slang", "SLANG", "--version") }.Select(Probe).ToArray();
         string artifact = Path.Combine(directory, "toolchain.json");
         File.WriteAllText(artifact, JsonSerializer.Serialize(new { format = "veloformal.yosys-probe.v1", tools }, new JsonSerializerOptions { WriteIndented = true }) + "\n");
         int found = tools.Count(tool => tool.available);
@@ -27,7 +27,10 @@ public static class YosysProbe
         string executable = Environment.GetEnvironmentVariable(tool.EnvironmentVariable) ?? tool.Name;
         try
         {
-            var start = new ProcessStartInfo(executable, "--version") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            var start = new ProcessStartInfo(executable, tool.VersionArgument) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            // Portable OSS CAD Suite launchers depend on sibling DLLs and
+            // helper executables; retain this adjustment within the child only.
+            ConfigurePortableSuitePath(start, executable);
             using var process = Process.Start(start);
             if (process is null) return new(tool.Name, tool.EnvironmentVariable, executable, false, null, "process did not start");
             // Begin draining both redirected streams before waiting: an unexpected
@@ -48,6 +51,16 @@ public static class YosysProbe
         }
     }
 
-    private sealed record Tool(string Name, string EnvironmentVariable);
+    internal static void ConfigurePortableSuitePath(ProcessStartInfo start, string executable)
+    {
+        if (!Path.IsPathRooted(executable)) return;
+        string? bin = Path.GetDirectoryName(executable);
+        string? root = bin is null ? null : Directory.GetParent(bin)?.FullName;
+        string? library = root is null ? null : Path.Combine(root, "lib");
+        string prefix = library is not null && Directory.Exists(library) ? bin + Path.PathSeparator + library : bin ?? string.Empty;
+        start.Environment["PATH"] = prefix + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+    }
+
+    private sealed record Tool(string Name, string EnvironmentVariable, string VersionArgument);
     private sealed record ProbeResult(string name, string environmentVariable, string configured, bool available, string? version, string? reason);
 }

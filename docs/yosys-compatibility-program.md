@@ -13,9 +13,11 @@ version-pinned comparison against Yosys/SymbiYosys.
 The current VeloHdl bridge accepts the actual current VeloSim normalized-v1
 counter shape and a separately versioned VeloHdl fixture grammar for one-clock,
 active-low-reset, nonblocking state updates. The fixture grammar now includes
-typed arithmetic, muxes, and explicit-width comparisons. The local machine did
-not have `yosys`, `yosys-smtbmc`, `sby`, `iverilog`, `verilator`, or `slang` on
-2026-10-28, so no Yosys differential outcome is claimed.
+typed arithmetic, muxes, and explicit-width comparisons. A pinned portable OSS
+CAD Suite was used on 2026-10-28 for two bounded fixture verdicts; its toolchain
+and outcomes are recorded in the Stage-1 verification record. This is limited
+fixture evidence, not a general Yosys-compatibility claim: Slang was absent and
+the VeloSim producer was not the source of the checked-in normalized artifact.
 
 The current VeloSim producer gap is tracked in [VeloFormal issue #1](https://github.com/jeffadickson/VeloFormal/issues/1).
 
@@ -53,10 +55,11 @@ dotnet run --project tools/VeloFormal.Build -c Release -- yosys-probe
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
 ```
 
-The Stage-1 runner prepends the directory of an absolute `SBY` setting only to
-its child process environment, allowing the portable SBY launcher to find its
-bundled Yosys tools without mutating the host configuration. This setup is a
-tooling recommendation, not evidence that the suite or the fixtures ran.
+The Stage-1 runner prepends the directory of an absolute `SBY` setting, and its
+portable suite `lib` sibling when present, only to its child process environment.
+This lets the portable SBY launcher find bundled Yosys executables and DLLs
+without mutating the host configuration. This setup is a tooling recommendation;
+the separately recorded fixture executions are the evidence.
 
 ## Compatibility ladder
 
@@ -99,10 +102,11 @@ The repository contains paired, source-controlled inputs under
   bounded-pass property over that signed fixture.
 
 The test suite binds each normalized artifact to the exact fixture source hash;
-the prospective pair is not claimed to have been produced by VeloSim. Once a
-pinned toolchain is present, add the Yosys script, status, depth, and replayable
-witness for each pair to the verification record before marking Stage 1
-qualified.
+the prospective pair is not claimed to have been produced by VeloSim. The first
+pinned executions recorded the expected bounded verdict for both fixtures.
+Before marking Stage 1 qualified, expand that evidence to the declared
+register/mux/comparator profile and demonstrate replayable cross-model witnesses
+rather than relying on verdict agreement alone.
 
 The prepared negative case is expected to be a bounded counterexample in both
 tools. The preferred C# runner preserves source and script hashes, SBY stdout,
