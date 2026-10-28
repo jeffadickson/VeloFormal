@@ -1,0 +1,4 @@
+contract SignedCompare for signed_compare
+    clock posedge clk
+    invariant well_formed: true
+end

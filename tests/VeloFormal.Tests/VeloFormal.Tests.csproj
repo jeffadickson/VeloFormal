@@ -4,7 +4,11 @@
     <None Include="../../examples/counter.vfc" Link="examples/counter.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../examples/counter.model" Link="examples/counter.model" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter.normalized.json" Link="fixtures/velohdl/counter.normalized.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/counter.sv" Link="fixtures/velohdl/counter.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/two-registers.normalized.json" Link="fixtures/velohdl/two-registers.normalized.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/signed-compare.normalized.json" Link="fixtures/velohdl/signed-compare.normalized.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/signed-compare.sv" Link="fixtures/velohdl/signed-compare.sv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/signed-compare.vfc" Link="fixtures/velohdl/signed-compare.vfc" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />

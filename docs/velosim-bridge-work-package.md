@@ -31,17 +31,20 @@ Record the upstream revision and dependency/tool versions in the import manifest
 ## Implemented first slice
 
 `VeloSimNormalizedTranslator` accepts the current VeloSim normalized UHDM
-producer only for its documented one-process reset/increment shape. Separately,
+producer only for its documented one-process zero-reset/increment shape. Separately,
 the prospective `velohdl.normalized.v1` fixture grammar supports one through
 256 `always_ff` processes on one shared `posedge` clock with one shared
-active-low reset branch that assigns zero and a non-reset branch containing a
-typed expression. Its accepted expression nodes are `const`, `ref`, `not`,
-`add`, `sub`, `mul`, `and`, `or`, `xor`, `shl`, `shr`, and `ite`; each
-arithmetic value is explicitly destination-width typed.
-It emits one unsigned 1--256-bit VeloFormal state per process destination, with all other
-one-bit signals represented as Boolean inputs and wider signals as unsigned
-inputs. Different process clocks/resets, edges, duplicate writers, branch targets,
-out-of-range constants, four-state data, and unsupported expressions fail closed.
+active-low reset branch that assigns a destination-width constant and a
+non-reset branch containing a typed expression. Its accepted expression nodes
+are `const`, `ref`, bitwise `not`, arithmetic `neg`, `add`, `sub`, `mul`,
+`and`, `or`, `xor`, `shl`, `shr`, and `ite`; each arithmetic value is
+explicitly destination-width typed. Signals and comparisons may explicitly be
+signed; signed/unsigned mixing is rejected rather than inferred.
+It emits one signed or unsigned 1--256-bit VeloFormal state per process
+destination, with unsigned one-bit non-state signals represented as Boolean
+inputs and other non-state signals as bitvectors. Different process
+clocks/resets, edges, duplicate writers, branch targets, out-of-range
+constants, four-state data, and unsupported expressions fail closed.
 This is an implemented starter subset, not general RTL lowering. The expanded
 `velohdl.normalized.v1` fixture grammar is intentionally separate from the
 current VeloSim `velosim.uhdm.normalized.v1` producer; it is a prospective

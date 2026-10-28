@@ -195,6 +195,19 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void PairedSignedStage1FixtureBindsItsRealSourceAndContract()
+    {
+        string normalized = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "signed-compare.normalized.json"));
+        string source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "signed-compare.sv"));
+        string contractText = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "signed-compare.vfc"));
+        var provenance = StructuralProvenance.Create(source, "VeloHdlFixture", "stage1-fixture", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "signed_compare");
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), design.Provenance.SourceSha256);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(ContractParser.Parse(contractText), model), new SolverOptions(Depth: 3)).Status);
+    }
+
+    [Fact]
     public void LowersNegativeSignedConstantsWithinTheirMathematicalRange()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
@@ -296,7 +309,7 @@ public sealed class VeloHdlAdapterTests
             string normalizedPath = Path.Combine(directory, "counter.normalized.json");
             string sourcePath = Path.Combine(directory, "counter.sv");
             File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"), normalizedPath);
-            File.WriteAllText(sourcePath, "module counter; endmodule\n");
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.sv"), sourcePath);
             using var output = new StringWriter(); using var error = new StringWriter();
             int code = Command.Run(["--translate-velosim-normalized", normalizedPath, "--module", "counter", "--source", sourcePath, "--frontend-revision", "fa7cd2f"], TextReader.Null, output, error);
             Assert.Equal(0, code); Assert.Empty(error.ToString());

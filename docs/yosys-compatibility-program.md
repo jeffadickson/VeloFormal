@@ -60,6 +60,23 @@ Counterexamples must replay in both models or the discrepancy becomes a tracked
 GitHub issue with a minimized reproducer. No unsupported construct is silently
 approximated.
 
+## Prepared Stage-1 corpus
+
+The repository contains paired, source-controlled inputs under
+`tests/fixtures/velohdl/` for the first eventual differential cases:
+
+- `counter.sv` with `counter.normalized.json`: the actual current VeloSim
+  zero-reset/increment envelope shape;
+- `signed-compare.sv`, `signed-compare.normalized.json`, and
+  `signed-compare.vfc`: prospective VeloHdl signed reset, comparison, and
+  unary-negation semantics.
+
+The test suite binds each normalized artifact to the exact fixture source hash;
+the prospective pair is not claimed to have been produced by VeloSim. Once a
+pinned toolchain is present, add the Yosys script, status, depth, and replayable
+witness for each pair to the verification record before marking Stage 1
+qualified.
+
 ## Near-term next action
 
 Install or obtain a pinned Yosys/SymbiYosys environment, then qualify Stage 1

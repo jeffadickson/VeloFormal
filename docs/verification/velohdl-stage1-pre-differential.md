@@ -78,6 +78,15 @@ Coverlet/ReportGenerator artifact is
 41.4% branch coverage across all measured assemblies. It remains
 pre-differential evidence only.
 
+The paired Stage-1 corpus was added with 24 focused bridge tests passing. The
+prospective signed comparison fixture binds its checked-in SystemVerilog source,
+normalized fixture artifact, and VeloFormal contract before BMC; no claim is
+made that VeloSim emitted that prospective artifact. Focused Coverlet and
+ReportGenerator evidence is under
+`artifacts/coverage/stage1-corpus-focused-20261028/`: 52.9% line and 41.5%
+branch coverage across the three measured assemblies. A future external run
+must add version-pinned Yosys/SymbiYosys status and witnesses separately.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

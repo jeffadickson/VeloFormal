@@ -22,3 +22,5 @@ artifacts/
 !tests/VeloFormal.Tests/stryker-config.json
 !tests/fixtures/velohdl/
 !tests/fixtures/velohdl/*.json
+!tests/fixtures/velohdl/*.sv
+!tests/fixtures/velohdl/*.vfc
