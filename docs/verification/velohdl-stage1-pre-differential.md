@@ -29,6 +29,24 @@ The FsCheck property `PreservesRandomizedComparisonWidths` ran 100 cases with
 replay seed `281028,44017`; it varies bit widths 1–256 and comparison constants
 within the exact destination domain.
 
+## Explicit signed-state expansion
+
+The prospective fixture grammar now accepts an explicit Boolean `signed` signal
+field. It lowers signed state arithmetic and reset zero as signed fixed-width
+literals, rejects any implicit signed/unsigned arithmetic mix, and preserves the
+strict current-VeloSim boundary by rejecting even a redundant signedness field
+in `velosim.uhdm.normalized.v1` input. Signed comparisons are not part of this
+envelope version.
+
+On 2026-10-28, the focused bridge suite ran 19 passed, 0 failed, 0 skipped
+tests, including signed lowering, end-to-end model binding/BMC, mixed-sort
+rejection, and current-producer rejection. Coverlet and ReportGenerator wrote
+`artifacts/coverage/signed-stage1-focused-20261028/`; within that focused
+scope, VeloHdl line coverage was 90.8%. The all-assembly 51.7% line coverage
+from that report is intentionally not compared with the prior full-suite 96.3%
+metric, because the test scope differs. The unfiltered collector run exceeded
+the local 30-second command observation limit and is not claimed as a result.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

@@ -28,6 +28,8 @@ public static class VeloSimNormalizedTranslator
             var signals = root.GetProperty("signals").EnumerateArray().Select(ParseSignal).ToArray();
             if (signals.Select(signal => signal.Name).Distinct(StringComparer.Ordinal).Count() != signals.Length)
                 throw new InvalidDataException("Normalized UHDM has duplicate signal names.");
+            if (normalizedFormat == "velosim.uhdm.normalized.v1" && signals.Any(signal => signal.DeclaresSignedness))
+                throw new InvalidDataException("The current VeloSim normalized v1 producer does not declare signed signals.");
             var processes = root.GetProperty("processes");
             if (processes.ValueKind != JsonValueKind.Array || processes.GetArrayLength() is < 1 or > 256)
                 throw new InvalidDataException("One through 256 synchronous processes are required.");
@@ -47,12 +49,14 @@ public static class VeloSimNormalizedTranslator
                 string kind = states.Contains(signal.Name) ? "state" : "input";
                 // A one-bit register is still an RTL bitvector state. Only scalar
                 // non-state signals become Boolean controls in the current subset.
-                string type = states.Contains(signal.Name) || signal.Width != 1 ? "unsigned" : "bool";
+                string type = states.Contains(signal.Name) || signal.Width != 1 || signal.Signed
+                    ? signal.Signed ? "signed" : "unsigned"
+                    : "bool";
                 string width = type == "bool" ? "" : $",\"width\":{signal.Width}";
                 return $"{{\"name\":{JsonSerializer.Serialize(signal.Name)},\"type\":\"{type}\"{width},\"kind\":\"{kind}\"}}";
             }));
             string modelNext = string.Join(",", lowered.Select(process =>
-                $"{JsonSerializer.Serialize(process.State.Name)}:{JsonSerializer.Serialize($"ite(!{reset}, {process.State.Width}'d0, {process.Next})")}"));
+                $"{JsonSerializer.Serialize(process.State.Name)}:{JsonSerializer.Serialize($"ite(!{reset}, {Literal(process.State.Width, process.State.Signed, BigInteger.Zero)}, {process.Next})")}"));
             string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{modelNext}}}}}";
             string envelope = $"{{\"format\":\"{StructuralDesign.Format}\",\"provenance\":{{\"source_sha256\":{JsonSerializer.Serialize(provenance.SourceSha256)},\"frontend\":{JsonSerializer.Serialize(provenance.Frontend)},\"frontend_revision\":{JsonSerializer.Serialize(provenance.FrontendRevision)},\"normalized_ir_sha256\":{JsonSerializer.Serialize(provenance.NormalizedIrSha256)},\"adapter\":{JsonSerializer.Serialize(provenance.Adapter)},\"adapter_version\":{JsonSerializer.Serialize(provenance.AdapterVersion)}}},\"model\":{model}}}";
             return StructuralDesign.Parse(envelope);
@@ -63,16 +67,25 @@ public static class VeloSimNormalizedTranslator
         }
     }
 
-    private static (string Name, int Width) ParseSignal(JsonElement signal)
+    private static Signal ParseSignal(JsonElement signal)
     {
-        Fields(signal, "name", "width");
+        if (signal.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Unsupported normalized UHDM shape.");
+        var fields = signal.EnumerateObject().ToArray();
+        if (fields.Length is < 2 or > 3 || fields.Any(field => field.Name is not "name" and not "width" and not "signed") ||
+            !fields.Any(field => field.Name == "name") || !fields.Any(field => field.Name == "width"))
+            throw new InvalidDataException("Unsupported normalized UHDM shape.");
         string name = Text(signal, "name");
         int width = signal.GetProperty("width").GetInt32();
         if (width is < 1 or > 256) throw new InvalidDataException("Signal width is outside VeloFormal bounds.");
-        return (name, width);
+        bool signed = signal.TryGetProperty("signed", out var signedValue)
+            ? signedValue.ValueKind == JsonValueKind.True ? true
+            : signedValue.ValueKind == JsonValueKind.False ? false
+            : throw new InvalidDataException("Signal signedness must be Boolean.")
+            : false;
+        return new(name, width, signed, signal.TryGetProperty("signed", out _));
     }
 
-    private static (string Clock, string Reset, (string Name, int Width) State, string Next) ParseSynchronousProcess(JsonElement process, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames)
+    private static (string Clock, string Reset, Signal State, string Next) ParseSynchronousProcess(JsonElement process, Signal[] signals, IReadOnlySet<string> stateNames)
     {
         Fields(process, "kind", "event", "body");
         if (Text(process, "kind") != "always_ff") throw new InvalidDataException("Only always_ff is supported.");
@@ -90,10 +103,13 @@ public static class VeloSimNormalizedTranslator
         string target = Text(then, "target");
         if (target != Text(otherwise, "target")) throw new InvalidDataException("Reset branches must update the same state.");
         if (target == clock || target == reset) throw new InvalidDataException("Clock and reset signals cannot be state destinations.");
-        var match = signals.SingleOrDefault(s => s.Name == target);
-        if (string.IsNullOrEmpty(match.Name) || signals.SingleOrDefault(s => s.Name == clock).Width != 1 || signals.SingleOrDefault(s => s.Name == reset).Width != 1) throw new InvalidDataException("Clock, reset, or state signal is invalid.");
+        Signal? match = signals.SingleOrDefault(s => s.Name == target);
+        Signal? clockSignal = signals.SingleOrDefault(s => s.Name == clock);
+        Signal? resetSignal = signals.SingleOrDefault(s => s.Name == reset);
+        if (match is null || clockSignal is null || resetSignal is null || clockSignal.Width != 1 || resetSignal.Width != 1)
+            throw new InvalidDataException("Clock, reset, or state signal is invalid.");
         Constant(then.GetProperty("value"), 0);
-        return (clock, reset, match, Expression(otherwise.GetProperty("value"), signals, stateNames, match.Width));
+        return (clock, reset, match, Expression(otherwise.GetProperty("value"), signals, stateNames, match.Width, match.Signed));
     }
 
     private static void Constant(JsonElement value, int expected)
@@ -113,7 +129,7 @@ public static class VeloSimNormalizedTranslator
         return name;
     }
 
-    private static bool IsCurrentVeloSimV1Counter(JsonElement processes, (string Clock, string Reset, (string Name, int Width) State, string Next)[] lowered)
+    private static bool IsCurrentVeloSimV1Counter(JsonElement processes, (string Clock, string Reset, Signal State, string Next)[] lowered)
     {
         if (lowered.Length != 1) return false;
         var value = processes[0].GetProperty("body").GetProperty("else").GetProperty("value");
@@ -131,7 +147,7 @@ public static class VeloSimNormalizedTranslator
     /// VeloFormal expression language. Width-changing references are explicit,
     /// preventing accidental host-integer or implicit sign-extension semantics.
     /// </summary>
-    private static string Expression(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames, int resultWidth)
+    private static string Expression(JsonElement value, Signal[] signals, IReadOnlySet<string> stateNames, int resultWidth, bool resultSigned)
     {
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Normalized expression must be an object.");
         string kind = Text(value, "kind");
@@ -142,21 +158,22 @@ public static class VeloSimNormalizedTranslator
             if (literal.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(literal.GetRawText(), NumberStyles.None,
                 CultureInfo.InvariantCulture, out var constant) || constant.Sign < 0 || constant.GetBitLength() > resultWidth)
                 throw new InvalidDataException("Constant does not fit the destination width.");
-            return $"{resultWidth}'d{constant}";
+            return Literal(resultWidth, resultSigned, constant);
         }
         if (kind == "ref")
         {
             Fields(value, "kind", "name");
             string name = Text(value, "name");
-            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
-            if (string.IsNullOrEmpty(signal.Name)) throw new InvalidDataException("Expression references an unknown signal.");
-            if (signal.Width == 1 && resultWidth != 1) throw new InvalidDataException("Boolean signal cannot be used as an arithmetic value.");
+            Signal? signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (signal is null) throw new InvalidDataException("Expression references an unknown signal.");
+            if (signal.Width == 1 && !signal.Signed && resultWidth != 1) throw new InvalidDataException("Boolean signal cannot be used as an arithmetic value.");
+            if (signal.Signed != resultSigned) throw new InvalidDataException("Signed and unsigned arithmetic operands must not mix implicitly.");
             return signal.Width == resultWidth ? name : $"resize({name}, {resultWidth})";
         }
         if (kind == "not")
         {
             Fields(value, "kind", "operand");
-            return $"~({Expression(value.GetProperty("operand"), signals, stateNames, resultWidth)})";
+            return $"~({Expression(value.GetProperty("operand"), signals, stateNames, resultWidth, resultSigned)})";
         }
         if (kind is "add" or "sub" or "mul" or "and" or "or" or "xor" or "shl" or "shr")
         {
@@ -166,13 +183,13 @@ public static class VeloSimNormalizedTranslator
                 "add" => "+", "sub" => "-", "mul" => "*", "and" => "&", "or" => "|", "xor" => "^",
                 "shl" => "<<", "shr" => ">>", _ => throw new InvalidOperationException()
             };
-            return $"({Expression(value.GetProperty("lhs"), signals, stateNames, resultWidth)} {op} {Expression(value.GetProperty("rhs"), signals, stateNames, resultWidth)})";
+            return $"({Expression(value.GetProperty("lhs"), signals, stateNames, resultWidth, resultSigned)} {op} {Expression(value.GetProperty("rhs"), signals, stateNames, resultWidth, resultSigned)})";
         }
         if (kind == "ite")
         {
             Fields(value, "kind", "condition", "then", "else");
             string condition = Condition(value.GetProperty("condition"), signals, stateNames);
-            return $"ite({condition}, {Expression(value.GetProperty("then"), signals, stateNames, resultWidth)}, {Expression(value.GetProperty("else"), signals, stateNames, resultWidth)})";
+            return $"ite({condition}, {Expression(value.GetProperty("then"), signals, stateNames, resultWidth, resultSigned)}, {Expression(value.GetProperty("else"), signals, stateNames, resultWidth, resultSigned)})";
         }
         throw new InvalidDataException("Unsupported normalized expression kind.");
     }
@@ -182,7 +199,7 @@ public static class VeloSimNormalizedTranslator
     /// Comparisons require an explicit width so constants have no hidden host-width
     /// interpretation, matching the width-explicit rule for state expressions.
     /// </summary>
-    private static string Condition(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames)
+    private static string Condition(JsonElement value, Signal[] signals, IReadOnlySet<string> stateNames)
     {
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Normalized condition must be an object.");
         string kind = Text(value, "kind");
@@ -190,8 +207,8 @@ public static class VeloSimNormalizedTranslator
         {
             Fields(value, "kind", "name");
             string name = Text(value, "name");
-            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
-            if (string.IsNullOrEmpty(signal.Name) || signal.Width != 1 || stateNames.Contains(name))
+            Signal? signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (signal is null || signal.Width != 1 || signal.Signed || stateNames.Contains(name))
                 throw new InvalidDataException("Condition references must be scalar input signals.");
             return name;
         }
@@ -218,22 +235,24 @@ public static class VeloSimNormalizedTranslator
         throw new InvalidDataException("Unsupported normalized condition kind.");
     }
 
-    private static string ComparisonOperand(JsonElement value, (string Name, int Width)[] signals, IReadOnlySet<string> stateNames, int width)
+    private static string ComparisonOperand(JsonElement value, Signal[] signals, IReadOnlySet<string> stateNames, int width)
     {
         if (value.ValueKind == JsonValueKind.Object && Text(value, "kind") == "ref")
         {
             Fields(value, "kind", "name");
             string name = Text(value, "name");
-            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
-            if (string.IsNullOrEmpty(signal.Name)) throw new InvalidDataException("Expression references an unknown signal.");
+            Signal? signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (signal is null) throw new InvalidDataException("Expression references an unknown signal.");
             if (signal.Width == 1 && !stateNames.Contains(name))
             {
                 if (width != 1) throw new InvalidDataException("Boolean controls can only be compared at width one.");
                 return $"ite({name}, 1'd1, 1'd0)";
             }
         }
-        return Expression(value, signals, stateNames, width);
+        return Expression(value, signals, stateNames, width, resultSigned: false);
     }
+
+    private static string Literal(int width, bool signed, BigInteger value) => $"{width}'{(signed ? "s" : string.Empty)}d{value}";
 
     private static void Fields(JsonElement value, params string[] names)
     {
@@ -249,4 +268,6 @@ public static class VeloSimNormalizedTranslator
             ? text
             : throw new InvalidDataException($"'{name}' must be a string.");
     }
+
+    private sealed record Signal(string Name, int Width, bool Signed, bool DeclaresSignedness);
 }

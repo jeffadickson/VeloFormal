@@ -122,6 +122,31 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersExplicitSignedStateArithmeticWithoutImplicitMixedOperands()
+    {
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        string signed = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":true}", StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", signed);
+        var design = VeloSimNormalizedTranslator.Translate(signed, provenance, "counter");
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        Assert.Equal(LogicType.Bits(8, signed: true), model.Signals.Single(signal => signal.Name == "count").Type);
+        using (var lowered = JsonDocument.Parse(design.ModelJson()))
+            Assert.Equal("ite(!rst_n, 8'sd0, (count + 8'sd1))", lowered.RootElement.GetProperty("next").GetProperty("count").GetString());
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant well_formed: true\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 2)).Status);
+
+        string mixed = signed.Replace("\"value\":1", "\"name\":\"rst_n\"", StringComparison.Ordinal)
+            .Replace("\"kind\":\"const\",\"name\":\"rst_n\"", "\"kind\":\"ref\",\"name\":\"rst_n\"", StringComparison.Ordinal);
+        var mixedProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", mixed);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(mixed, mixedProvenance, "counter"));
+
+        string currentProducerWithSignedFlag = fixture.Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":false}", StringComparison.Ordinal);
+        var currentProvenance = StructuralProvenance.Create("module counter;", "VeloSim", "fixture", currentProducerWithSignedFlag);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(currentProducerWithSignedFlag, currentProvenance, "counter"));
+    }
+
+    [Fact]
     public void RejectsUnsupportedOrOutOfRangeNormalizedExpressions()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));

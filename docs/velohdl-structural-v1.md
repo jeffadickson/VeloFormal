@@ -32,7 +32,8 @@ latter is not claimed to be emitted by the current VeloSim checkout.
 
 The VeloHdl fixture grammar has:
 
-- 1–256 uniquely named signals, each with a width from 1 through 256;
+- 1–256 uniquely named signals, each with a width from 1 through 256 and an
+  optional Boolean `signed` flag (default `false`);
 - 1–256 `always_ff` processes, all `posedge` on the same scalar clock and all
   using the same scalar active-low reset;
 - one `if (!reset)` body per process, whose reset branch is a nonblocking write
@@ -44,11 +45,13 @@ The VeloHdl fixture grammar has:
   `eq`, `ne`, `lt`, `le`, `gt`, or `ge`. Comparisons carry an explicit
   `width` from 1 through 256.
 
-Every state destination is an unsigned bitvector. Non-state scalar signals are
-Boolean controls; other non-state signals are unsigned bitvectors. Constants
-must fit the destination width. References of another bitvector width acquire
-an explicit `resize`; scalar Boolean signals cannot silently become arithmetic
-operands.
+State destinations and non-scalar inputs are unsigned by default, or signed
+bitvectors when their explicit `signed` flag is true. Unsigned scalar inputs are
+Boolean controls. Constants inherit the destination signedness and must fit its
+width. References of another bitvector width acquire an explicit `resize`;
+scalar Boolean signals cannot silently become arithmetic operands. Signed and
+unsigned arithmetic operands cannot mix implicitly. Comparisons remain an
+explicit-width unsigned subset in v1; signed comparison lowering is deferred.
 
 ## Formal mapping
 
