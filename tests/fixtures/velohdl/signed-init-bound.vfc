@@ -1,0 +1,5 @@
+contract SignedInitBound for signed_init
+    clock posedge clk
+    require reset_inactive: rst_n
+    invariant remains_nonpositive: count <= 8'sd0
+end

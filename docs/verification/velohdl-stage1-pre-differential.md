@@ -219,6 +219,26 @@ three VCD states replay the VeloFormal trace exactly, while the final VCD state
 is its required post-update observation. This one-step horizon/scheduling
 normalization is explicit fixture metadata, not an unexamined verdict match.
 
+## Initialized signed comparison and negation replay fixture
+
+`signed-init` extends the deterministic corpus with signed eight-bit state,
+an explicit signed comparison, a mux (`ite`), unary negation, and signed
+subtraction. It initializes `count` to mathematical `-1`, constrains `rst_n`,
+and deliberately violates `count <= 0` after the negative branch computes
+`-(-1) = 1`. The local VeloFormal test reports the encoded fixed-width prefix
+`255` (signed `-1`) then `1`, so the mathematical signed interpretation and
+stored bit pattern are both explicit.
+
+The release build and focused Build-option/bridge tests completed with 53
+passed, 0 failed, and 0 skipped tests. The pinned external
+`yosys-stage1-signed` runner produced expected `FAIL` at
+`artifacts/yosys-stage1/20261028-145455-8602518/result.json`, with source hash
+`3f9be8ea5f9be040b20585dd14d0bfef34f2437c1505c962ff8fa23e368b1af9`, SBY
+script hash `fd4beccba013e5918427336d02e63e9523758c54d67a13e7f40798f7eba791a6`,
+and raw status `FAIL 2 0`. Its VCD begins with signed bit patterns `0xff`,
+`0x01`, and `0x00`, matching the VeloFormal prefix through the same pre-NBA
+clocked-assertion convention recorded for `counter-init`.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,

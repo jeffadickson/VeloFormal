@@ -122,6 +122,7 @@ stderr, exit code, and the SBY status file beneath `artifacts/yosys-stage1/`:
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-positive
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-deterministic
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-signed
 ```
 
 The first command requires the negative fixture's expected `FAIL`; the second
@@ -134,6 +135,7 @@ equivalent direct external commands are:
 sby -f counter-bound.sby
 sby -f signed-compare-pass.sby
 sby -f counter-init-bound.sby
+sby -f signed-init-bound.sby
 ```
 
 The checked-in `.sby` file selects BMC depth 3 and Z3. Run it only after
