@@ -15,6 +15,27 @@ ReportGenerator tool, and writes HTML, text, and Cobertura reports to a fresh
 directory under `artifacts/coverage/`. Use `test` instead of `coverage` to omit
 coverage. All development helpers are C#; no Python helper is required.
 
+## Development verification
+
+The repository keeps the core checker on Microsoft.Z3 4.12.2: this is the
+newest published `Microsoft.Z3` package as of 2026-10-27, so no speculative
+solver upgrade has been applied. The release test suite exercises its native
+Z3 integration on this machine.
+
+`FsCheck.Xunit` supplies deterministic formatter-idempotence properties; the
+current replay seed is `123456,789013`. `System.CommandLine` validates the CLI
+option vocabulary before the compatibility-preserving command adapter dispatches
+it. StrictDoc requirements reside in `requirements/VeloFormal.sdoc` and can be
+exported with `strictdoc export requirements --output-dir artifacts/strictdoc`.
+
+`fuzz/VeloFormal.Fuzz` is a parser-only SharpFuzz target. Run actual campaigns
+from Linux/WSL using AFL++ or libFuzzer, recording corpus, seed, time, and
+minimized crashes; ordinary unit tests are not a substitute. The local tool
+manifest also pins Stryker.NET 4.16.0. Its project-discovery run is currently
+blocked on this net8.0 solution before mutation generation; this is a tool
+compatibility limitation, not a mutation score. The checked-in config lives
+beside the xUnit project for the documented invocation model.
+
 To simulate the pinned ISC-licensed PicoRV32 UART divider fixture, install
 Icarus Verilog and run:
 

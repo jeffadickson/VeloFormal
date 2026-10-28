@@ -22,7 +22,8 @@ namespace VeloFormal
             }
             try
             {
-if (args.Contains("--format-contract", StringComparer.Ordinal))
+                CliSchema.Validate(args);
+                if (args.Contains("--format-contract", StringComparer.Ordinal))
                 {
                     output.Write(ContractCommand.Format(args));
                     return 0;

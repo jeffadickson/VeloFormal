@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-net/master/src/Stryker.CLI/stryker-schema.json",
+  "stryker-config": {
+    "solution": "../../VeloFormal.sln",
+    "project": "VeloFormal.csproj",
+    "mutate": [ "Language/**/*.cs", "Solving/**/*.cs" ],
+    "reporters": [ "progress", "html", "cleartext" ],
+    "concurrency": 2
+  }
+}

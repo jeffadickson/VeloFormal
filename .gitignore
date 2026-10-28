@@ -13,8 +13,10 @@ dist/
 *.log
 **/bin/
 **/obj/
+**/TestResults/
 artifacts/
 .dotnet-home/
 .nuget/
 !global.json
 !.config/dotnet-tools.json
+!tests/VeloFormal.Tests/stryker-config.json

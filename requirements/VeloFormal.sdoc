@@ -1,0 +1,50 @@
+[DOCUMENT]
+TITLE: VeloFormal Requirements
+UID: VF-REQ
+PREFIX: VF-
+
+[[SECTION]]
+TITLE: Contract language
+
+[REQUIREMENT]
+UID: VF-DSL-001
+STATUS: Draft
+TITLE: Parse supported contract syntax
+STATEMENT: VeloFormal shall parse the documented v0.2 contract grammar with source-located diagnostics for malformed input.
+RATIONALE: A formal result is only meaningful when the contract source is unambiguous and diagnostics identify the rejected source location.
+RELATIONS:
+- TYPE: File
+  VALUE: src/VeloFormal/Language/ContractParser.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/ContractParserTests.cs
+
+[REQUIREMENT]
+UID: VF-DSL-002
+STATUS: Draft
+TITLE: Preserve contract formatting semantics
+STATEMENT: VeloFormal shall format a parsed supported contract into canonical source that reparses without changing its contract structure or supported expression semantics.
+RATIONALE: Canonical source supports reproducible reviews and parser regression testing.
+RELATIONS:
+- TYPE: File
+  VALUE: src/VeloFormal/Language/ContractFormatter.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/ContractFormatterTests.cs
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Bounded verification
+
+[REQUIREMENT]
+UID: VF-BMC-001
+STATUS: Draft
+TITLE: Report finite-horizon results honestly
+STATEMENT: VeloFormal shall distinguish counterexample, bounded-pass, incomplete, unknown, assumption-unsat, and model-unsat outcomes and shall not present bounded-pass as an unbounded proof.
+RATIONALE: Finite bounded model checking cannot establish an unbounded safety proof without a separately implemented proof method.
+RELATIONS:
+- TYPE: File
+  VALUE: src/VeloFormal/Solving/BoundedChecker.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/SolverCoreTests.cs
+
+[[/SECTION]]

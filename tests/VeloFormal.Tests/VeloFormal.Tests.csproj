@@ -7,6 +7,7 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" PrivateAssets="all" />
+    <PackageReference Include="FsCheck.Xunit" Version="3.4.0" />
     <ProjectReference Include="../../src/VeloFormal/VeloFormal.csproj" />
     <ProjectReference Include="../../src/VeloFormal.Cli/VeloFormal.Cli.csproj" />
     <ProjectReference Include="../../tools/VeloFormal.Build/VeloFormal.Build.csproj" />
