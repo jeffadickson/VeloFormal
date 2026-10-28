@@ -34,6 +34,8 @@ public sealed class BuildOptionTests
         Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-probe", "--no-build"]));
         Assert.Equal("yosys-stage1", BuildOptions.Parse(["yosys-stage1"]).Mode);
         Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-stage1", "--no-build"]));
+        Assert.Equal("yosys-stage1-positive", BuildOptions.Parse(["yosys-stage1-positive"]).Mode);
+        Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-stage1-positive", "--no-build"]));
     }
 
     [Fact]

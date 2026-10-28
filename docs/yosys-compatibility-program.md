@@ -114,14 +114,17 @@ stderr, exit code, and the SBY status file beneath `artifacts/yosys-stage1/`:
 
 ```powershell
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-positive
 ```
 
-It exits zero only when SBY reports the fixture's expected `FAIL` status;
-missing tools exit 2 with a diagnostic artifact. From the fixture directory,
-the equivalent direct external command is:
+The first command requires the negative fixture's expected `FAIL`; the second
+requires the signed fixture's expected bounded `PASS`. Missing tools exit 2
+with a diagnostic artifact. From the fixture directory, the equivalent direct
+external commands are:
 
 ```powershell
 sby -f counter-bound.sby
+sby -f signed-compare-pass.sby
 ```
 
 The checked-in `.sby` file selects BMC depth 3 and Z3. Run it only after

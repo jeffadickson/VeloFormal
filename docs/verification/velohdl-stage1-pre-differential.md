@@ -171,9 +171,11 @@ because the property permits an unconstrained initial state; verdict agreement
 does not establish an identical witness. A constrained-init replay fixture is
 still required before claiming counterexample trace equivalence.
 
-The directly invoked positive `signed-compare-pass.sby` job used the same BMC
-depth and Z3 configuration and returned `PASS 0 0` in
-`artifacts/yosys-stage1/positive-20261028-144100/status`. Its source-bound
+The positive `signed-compare-pass.sby` job used the same BMC depth and Z3
+configuration and returned `PASS 0 0`. It was first observed in
+`artifacts/yosys-stage1/positive-20261028-144100/status` and then reproduced by
+the C# `yosys-stage1-positive` runner in
+`artifacts/yosys-stage1/20261028-144933-4155033/result.json`. Its source-bound
 VeloFormal counterpart reported `bounded-pass` at depth 3, with source hash
 `fb9b888f7b7e87e83d882045aa63553cbf892f0e3fe29b5423ad6923b731f113` and
 normalized IR hash

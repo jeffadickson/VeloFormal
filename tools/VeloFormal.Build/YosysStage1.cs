@@ -8,19 +8,26 @@ namespace VeloFormal.Build;
 /// <summary>Runs the prepared negative Stage-1 SymbiYosys fixture and retains reproducible execution evidence.</summary>
 public static class YosysStage1
 {
-    private const string Fixture = "counter-bound.sby";
-    private const string ExpectedStatus = "FAIL";
+    private static readonly FixtureDefinition Negative = new("counter-bound.sby", "counter.sv", "FAIL");
+    private static readonly FixtureDefinition Positive = new("signed-compare-pass.sby", "signed-compare.sv", "PASS");
 
     /// <summary>
     /// Runs the fixture's bounded SymbiYosys job. Its expected assertion failure
     /// returns zero only when the SBY status file reports <c>FAIL</c>.
     /// </summary>
     public static int Run(string root, TextWriter output, TextWriter error)
+        => RunFixture(root, output, error, Negative);
+
+    /// <summary>Runs the prepared positive signed Stage-1 fixture and requires SBY's bounded <c>PASS</c> verdict.</summary>
+    public static int RunPositive(string root, TextWriter output, TextWriter error)
+        => RunFixture(root, output, error, Positive);
+
+    private static int RunFixture(string root, TextWriter output, TextWriter error, FixtureDefinition fixture)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         string fixtureDirectory = Path.Combine(root, "tests", "fixtures", "velohdl");
-        string script = Path.Combine(fixtureDirectory, Fixture);
-        string source = Path.Combine(fixtureDirectory, "counter.sv");
+        string script = Path.Combine(fixtureDirectory, fixture.Script);
+        string source = Path.Combine(fixtureDirectory, fixture.Source);
         if (!File.Exists(script) || !File.Exists(source))
         {
             error.WriteLine("Stage-1 fixture files are missing.");
@@ -44,7 +51,7 @@ public static class YosysStage1
             start.ArgumentList.Add("-f");
             start.ArgumentList.Add("-d");
             start.ArgumentList.Add(Path.Combine(directory, "sby"));
-            start.ArgumentList.Add(Fixture);
+            start.ArgumentList.Add(fixture.Script);
             using var process = Process.Start(start) ?? throw new IOException("SymbiYosys did not start.");
             Task<string> standardOutput = process.StandardOutput.ReadToEndAsync();
             Task<string> standardError = process.StandardError.ReadToEndAsync();
@@ -75,8 +82,8 @@ public static class YosysStage1
         File.WriteAllText(artifact, JsonSerializer.Serialize(new
         {
             format = "veloformal.yosys-stage1.v1",
-            fixture = Fixture,
-            expected_status = ExpectedStatus,
+            fixture = fixture.Script,
+            expected_status = fixture.ExpectedStatus,
             source_sha256 = HashFile(source),
             sby_sha256 = HashFile(script),
             sby = executable,
@@ -91,14 +98,16 @@ public static class YosysStage1
             error.WriteLine($"Stage-1 SBY run unavailable: {startError}. Artifact: {artifact}");
             return 2;
         }
-        if (status == ExpectedStatus)
+        if (status == fixture.ExpectedStatus)
         {
-            output.WriteLine($"Stage-1 SBY fixture produced expected {ExpectedStatus}; artifact: {artifact}");
+            output.WriteLine($"Stage-1 SBY fixture produced expected {fixture.ExpectedStatus}; artifact: {artifact}");
             return 0;
         }
-        error.WriteLine($"Stage-1 SBY fixture status was '{status ?? "missing"}', expected {ExpectedStatus}; artifact: {artifact}");
+        error.WriteLine($"Stage-1 SBY fixture status was '{status ?? "missing"}', expected {fixture.ExpectedStatus}; artifact: {artifact}");
         return 1;
     }
 
     private static string HashFile(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+
+    private sealed record FixtureDefinition(string Script, string Source, string ExpectedStatus);
 }
