@@ -147,6 +147,27 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersExplicitSignedComparisonConditions()
+    {
+        const string increment = "{\"kind\":\"add\",\"lhs\":{\"kind\":\"ref\",\"name\":\"count\"},\"rhs\":{\"kind\":\"const\",\"value\":1}}";
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        string signed = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":true}", StringComparison.Ordinal)
+            .Replace(increment, "{\"kind\":\"ite\",\"condition\":{\"kind\":\"lt\",\"width\":8,\"signed\":true,\"lhs\":{\"kind\":\"ref\",\"name\":\"count\"},\"rhs\":{\"kind\":\"const\",\"value\":0}},\"then\":{\"kind\":\"const\",\"value\":0},\"else\":" + increment + "}", StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", signed);
+        var design = VeloSimNormalizedTranslator.Translate(signed, provenance, "counter");
+        using (var lowered = JsonDocument.Parse(design.ModelJson()))
+            Assert.Contains("count < 8'sd0", lowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant well_formed: true\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 2)).Status);
+
+        string malformed = signed.Replace("\"signed\":true,\"lhs\"", "\"signed\":\"yes\",\"lhs\"", StringComparison.Ordinal);
+        var malformedProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", malformed);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(malformed, malformedProvenance, "counter"));
+    }
+
+    [Fact]
     public void RejectsUnsupportedOrOutOfRangeNormalizedExpressions()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));

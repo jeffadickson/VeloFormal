@@ -43,7 +43,8 @@ The VeloHdl fixture grammar has:
   `and`, `or`, `xor`, `shl`, `shr`, and `ite`;
 - `ite` conditions formed from scalar `ref`, `not`, Boolean `and`/`or`, and
   `eq`, `ne`, `lt`, `le`, `gt`, or `ge`. Comparisons carry an explicit
-  `width` from 1 through 256.
+  `width` from 1 through 256 and an optional Boolean `signed` flag (default
+  `false`).
 
 State destinations and non-scalar inputs are unsigned by default, or signed
 bitvectors when their explicit `signed` flag is true. Unsigned scalar inputs are
@@ -51,7 +52,8 @@ Boolean controls. Constants inherit the destination signedness and must fit its
 width. References of another bitvector width acquire an explicit `resize`;
 scalar Boolean signals cannot silently become arithmetic operands. Signed and
 unsigned arithmetic operands cannot mix implicitly. Comparisons remain an
-explicit-width unsigned subset in v1; signed comparison lowering is deferred.
+explicit-width unsigned subset by default; `signed: true` selects signed
+bitvector operands. Boolean controls cannot be used in signed comparisons.
 
 ## Formal mapping
 

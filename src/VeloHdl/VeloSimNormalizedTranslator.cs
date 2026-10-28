@@ -225,17 +225,26 @@ public static class VeloSimNormalizedTranslator
         }
         if (kind is "eq" or "ne" or "lt" or "le" or "gt" or "ge")
         {
-            Fields(value, "kind", "width", "lhs", "rhs");
+            if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Unsupported normalized UHDM shape.");
+            var fields = value.EnumerateObject().ToArray();
+            if (fields.Length is < 4 or > 5 || fields.Any(field => field.Name is not "kind" and not "width" and not "lhs" and not "rhs" and not "signed") ||
+                !fields.Any(field => field.Name == "width") || !fields.Any(field => field.Name == "lhs") || !fields.Any(field => field.Name == "rhs"))
+                throw new InvalidDataException("Unsupported normalized UHDM shape.");
             var width = value.GetProperty("width");
             if (width.ValueKind != JsonValueKind.Number || !width.TryGetInt32(out int bits) || bits is < 1 or > 256)
                 throw new InvalidDataException("Comparison width must be from 1 through 256.");
+            bool signed = value.TryGetProperty("signed", out var signedValue)
+                ? signedValue.ValueKind == JsonValueKind.True ? true
+                : signedValue.ValueKind == JsonValueKind.False ? false
+                : throw new InvalidDataException("Comparison signedness must be Boolean.")
+                : false;
             string op = kind switch { "eq" => "==", "ne" => "!=", "lt" => "<", "le" => "<=", "gt" => ">", "ge" => ">=", _ => throw new InvalidOperationException() };
-            return $"({ComparisonOperand(value.GetProperty("lhs"), signals, stateNames, bits)} {op} {ComparisonOperand(value.GetProperty("rhs"), signals, stateNames, bits)})";
+            return $"({ComparisonOperand(value.GetProperty("lhs"), signals, stateNames, bits, signed)} {op} {ComparisonOperand(value.GetProperty("rhs"), signals, stateNames, bits, signed)})";
         }
         throw new InvalidDataException("Unsupported normalized condition kind.");
     }
 
-    private static string ComparisonOperand(JsonElement value, Signal[] signals, IReadOnlySet<string> stateNames, int width)
+    private static string ComparisonOperand(JsonElement value, Signal[] signals, IReadOnlySet<string> stateNames, int width, bool signed)
     {
         if (value.ValueKind == JsonValueKind.Object && Text(value, "kind") == "ref")
         {
@@ -245,11 +254,12 @@ public static class VeloSimNormalizedTranslator
             if (signal is null) throw new InvalidDataException("Expression references an unknown signal.");
             if (signal.Width == 1 && !stateNames.Contains(name))
             {
+                if (signed) throw new InvalidDataException("Boolean controls cannot be used in signed comparisons.");
                 if (width != 1) throw new InvalidDataException("Boolean controls can only be compared at width one.");
                 return $"ite({name}, 1'd1, 1'd0)";
             }
         }
-        return Expression(value, signals, stateNames, width, resultSigned: false);
+        return Expression(value, signals, stateNames, width, signed);
     }
 
     private static string Literal(int width, bool signed, BigInteger value) => $"{width}'{(signed ? "s" : string.Empty)}d{value}";

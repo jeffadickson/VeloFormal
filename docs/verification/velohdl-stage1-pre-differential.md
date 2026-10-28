@@ -47,6 +47,13 @@ from that report is intentionally not compared with the prior full-suite 96.3%
 metric, because the test scope differs. The unfiltered collector run exceeded
 the local 30-second command observation limit and is not claimed as a result.
 
+The signed-comparison extension was then checked with 20 focused bridge tests
+passing and no failures or skips. Its Coverlet/ReportGenerator artifact is
+`artifacts/coverage/signed-comparison-focused-20261028/`, with 51.9% line and
+40.2% branch coverage across all three assemblies under the focused scope.
+The extension is exercised through translation, VeloFormal binding, and bounded
+Z3 checking; it does not constitute a Yosys differential result.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
