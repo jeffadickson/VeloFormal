@@ -56,7 +56,7 @@ public static class VeloSimNormalizedTranslator
                 return $"{{\"name\":{JsonSerializer.Serialize(signal.Name)},\"type\":\"{type}\"{width},\"kind\":\"{kind}\"}}";
             }));
             string modelNext = string.Join(",", lowered.Select(process =>
-                $"{JsonSerializer.Serialize(process.State.Name)}:{JsonSerializer.Serialize($"ite(!{reset}, {Literal(process.State.Width, process.State.Signed, BigInteger.Zero)}, {process.Next})")}"));
+                $"{JsonSerializer.Serialize(process.State.Name)}:{JsonSerializer.Serialize($"ite(!{reset}, {process.ResetValue}, {process.Next})")}"));
             string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{modelNext}}}}}";
             string envelope = $"{{\"format\":\"{StructuralDesign.Format}\",\"provenance\":{{\"source_sha256\":{JsonSerializer.Serialize(provenance.SourceSha256)},\"frontend\":{JsonSerializer.Serialize(provenance.Frontend)},\"frontend_revision\":{JsonSerializer.Serialize(provenance.FrontendRevision)},\"normalized_ir_sha256\":{JsonSerializer.Serialize(provenance.NormalizedIrSha256)},\"adapter\":{JsonSerializer.Serialize(provenance.Adapter)},\"adapter_version\":{JsonSerializer.Serialize(provenance.AdapterVersion)}}},\"model\":{model}}}";
             return StructuralDesign.Parse(envelope);
@@ -85,7 +85,7 @@ public static class VeloSimNormalizedTranslator
         return new(name, width, signed, signal.TryGetProperty("signed", out _));
     }
 
-    private static (string Clock, string Reset, Signal State, string Next) ParseSynchronousProcess(JsonElement process, Signal[] signals, IReadOnlySet<string> stateNames)
+    private static (string Clock, string Reset, Signal State, string ResetValue, string Next) ParseSynchronousProcess(JsonElement process, Signal[] signals, IReadOnlySet<string> stateNames)
     {
         Fields(process, "kind", "event", "body");
         if (Text(process, "kind") != "always_ff") throw new InvalidDataException("Only always_ff is supported.");
@@ -108,15 +108,19 @@ public static class VeloSimNormalizedTranslator
         Signal? resetSignal = signals.SingleOrDefault(s => s.Name == reset);
         if (match is null || clockSignal is null || resetSignal is null || clockSignal.Width != 1 || resetSignal.Width != 1)
             throw new InvalidDataException("Clock, reset, or state signal is invalid.");
-        Constant(then.GetProperty("value"), 0);
-        return (clock, reset, match, Expression(otherwise.GetProperty("value"), signals, stateNames, match.Width, match.Signed));
+        string resetValue = Constant(then.GetProperty("value"), match.Width, match.Signed);
+        return (clock, reset, match, resetValue, Expression(otherwise.GetProperty("value"), signals, stateNames, match.Width, match.Signed));
     }
 
-    private static void Constant(JsonElement value, int expected)
+    private static string Constant(JsonElement value, int width, bool signed)
     {
         Fields(value, "kind", "value");
-        if (Text(value, "kind") != "const" || value.GetProperty("value").GetInt32() != expected)
-            throw new InvalidDataException("Unsupported counter constant.");
+        if (Text(value, "kind") != "const") throw new InvalidDataException("Expected a normalized constant.");
+        var literal = value.GetProperty("value");
+        if (literal.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(literal.GetRawText(), NumberStyles.AllowLeadingSign,
+            CultureInfo.InvariantCulture, out var constant) || !FitsConstant(constant, width, signed))
+            throw new InvalidDataException("Constant does not fit the destination width.");
+        return constant.Sign < 0 ? $"-({Literal(width, signed, BigInteger.Abs(constant))})" : Literal(width, signed, constant);
     }
 
     private static string Destination(JsonElement process)
@@ -129,9 +133,10 @@ public static class VeloSimNormalizedTranslator
         return name;
     }
 
-    private static bool IsCurrentVeloSimV1Counter(JsonElement processes, (string Clock, string Reset, Signal State, string Next)[] lowered)
+    private static bool IsCurrentVeloSimV1Counter(JsonElement processes, (string Clock, string Reset, Signal State, string ResetValue, string Next)[] lowered)
     {
         if (lowered.Length != 1) return false;
+        if (lowered[0].ResetValue != Literal(lowered[0].State.Width, signed: false, BigInteger.Zero)) return false;
         var value = processes[0].GetProperty("body").GetProperty("else").GetProperty("value");
         if (value.ValueKind != JsonValueKind.Object || Text(value, "kind") != "add") return false;
         var left = value.GetProperty("lhs");
@@ -154,11 +159,7 @@ public static class VeloSimNormalizedTranslator
         if (kind == "const")
         {
             Fields(value, "kind", "value");
-            var literal = value.GetProperty("value");
-            if (literal.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(literal.GetRawText(), NumberStyles.AllowLeadingSign,
-                CultureInfo.InvariantCulture, out var constant) || !FitsConstant(constant, resultWidth, resultSigned))
-                throw new InvalidDataException("Constant does not fit the destination width.");
-            return constant.Sign < 0 ? $"-({Literal(resultWidth, resultSigned, BigInteger.Abs(constant))})" : Literal(resultWidth, resultSigned, constant);
+            return Constant(value, resultWidth, resultSigned);
         }
         if (kind == "ref")
         {

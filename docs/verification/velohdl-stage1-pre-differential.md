@@ -69,6 +69,15 @@ ReportGenerator produced
 branch coverage across all measured assemblies in that focused scope. It is not
 comparable to full-suite coverage and provides no external differential result.
 
+Explicit fixture reset constants were exercised with 23 focused bridge tests
+passing, including a negative signed reset value. The current VeloSim
+normalized-v1 producer continues to reject the same nonzero-reset input,
+preserving its documented zero-reset boundary. The focused
+Coverlet/ReportGenerator artifact is
+`artifacts/coverage/reset-constants-signed-focused-20261028/`: 52.9% line and
+41.4% branch coverage across all measured assemblies. It remains
+pre-differential evidence only.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

@@ -69,6 +69,33 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersFixtureResetConstantsButKeepsCurrentVeloSimZeroResetOnly()
+    {
+        string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
+        string initialized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("\"value\":0", "\"value\":7", StringComparison.Ordinal);
+        var fixtureProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", initialized);
+        var design = VeloSimNormalizedTranslator.Translate(initialized, fixtureProvenance, "counter");
+        using (var lowered = JsonDocument.Parse(design.ModelJson()))
+            Assert.Contains("ite(!rst_n, 8'd7", lowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant well_formed: true\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 2)).Status);
+
+        string signedInitialized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
+            .Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":true}", StringComparison.Ordinal)
+            .Replace("\"value\":0", "\"value\":-1", StringComparison.Ordinal);
+        var signedProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", signedInitialized);
+        var signedDesign = VeloSimNormalizedTranslator.Translate(signedInitialized, signedProvenance, "counter");
+        using (var signedLowered = JsonDocument.Parse(signedDesign.ModelJson()))
+            Assert.Contains("ite(!rst_n, -(8'sd1)", signedLowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+
+        string currentProducer = initialized.Replace("velohdl.normalized.v1", "velosim.uhdm.normalized.v1", StringComparison.Ordinal);
+        var currentProvenance = StructuralProvenance.Create("module counter;", "VeloSim", "fixture", currentProducer);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(currentProducer, currentProvenance, "counter"));
+    }
+
+    [Fact]
     public void LowersSupportedMuxedArithmeticNextStateExpression()
     {
         const string normalized = """

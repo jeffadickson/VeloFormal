@@ -26,7 +26,7 @@ FILE` to perform that independent byte check.
 ## Accepted normalized inputs
 
 The translator accepts the current `velosim.uhdm.normalized.v1` producer only
-for its documented one-process reset/increment shape. It also accepts the
+for its documented one-process zero-reset/increment shape. It also accepts the
 VeloHdl-owned, prospective `velohdl.normalized.v1` fixture grammar below. The
 latter is not claimed to be emitted by the current VeloSim checkout.
 
@@ -37,7 +37,8 @@ The VeloHdl fixture grammar has:
 - 1–256 `always_ff` processes, all `posedge` on the same scalar clock and all
   using the same scalar active-low reset;
 - one `if (!reset)` body per process, whose reset branch is a nonblocking write
-  of zero and whose else branch is a nonblocking write to the same destination;
+  of a destination-width constant and whose else branch is a nonblocking write
+  to the same destination;
 - one unique destination per process (multiple writers are rejected);
 - else expressions formed from `const`, `ref`, bitwise `not`, arithmetic `neg`, `add`, `sub`, `mul`,
   `and`, `or`, `xor`, `shl`, `shr`, and `ite`;
@@ -73,7 +74,7 @@ is not an induction or PDR proof.
 ## Rejected semantics
 
 The v1 bridge rejects multiple clocks, distinct resets, clock/reset destinations, latches, blocking
-assignments, multiple writers, non-zero reset assignments, arrays/memories,
+assignments, multiple writers, arrays/memories,
 four-state values, hierarchy, parameters, delays, asynchronous resets, and
 any unlisted expression node. These are requirements for a later envelope
 version, not implicit behavior.
