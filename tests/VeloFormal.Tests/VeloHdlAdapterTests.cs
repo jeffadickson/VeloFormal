@@ -436,4 +436,21 @@ public sealed class VeloHdlAdapterTests
         string next = document.RootElement.GetProperty("next").GetProperty("count").GetString()!;
         return next.Contains($"count <= {width}'d{constant}", StringComparison.Ordinal);
     }
+
+    /// <summary>Arbitrary normalized text must either lower or fail with the public fail-closed diagnostic.</summary>
+    [Property(MaxTest = 100, Replay = "281028,13057")]
+    public bool RejectsRandomNormalizedTextWithoutUnexpectedExceptions(string? raw)
+    {
+        if (raw is null) return true;
+        var provenance = StructuralProvenance.Create("fuzz", "Property", "1", raw);
+        try
+        {
+            VeloSimNormalizedTranslator.Translate(raw, provenance, "fuzz");
+        }
+        catch (InvalidDataException)
+        {
+            // Expected for arbitrary input outside the strict normalized grammar.
+        }
+        return true;
+    }
 }

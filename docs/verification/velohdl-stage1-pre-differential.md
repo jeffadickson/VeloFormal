@@ -123,6 +123,15 @@ parser. `dotnet build fuzz/VeloFormal.Fuzz/VeloFormal.Fuzz.csproj -c Release
 campaign was run on this Windows host, so there is no fuzz execution count,
 seed, corpus, or coverage result to claim.
 
+The FsCheck property `RejectsRandomNormalizedTextWithoutUnexpectedExceptions`
+ran 100 generated cases with replay seed `281028,13057`. It exercises random
+text through synthetic-provenance creation and the strict normalized translator;
+only its public `InvalidDataException` rejection is accepted. The 27-test
+focused suite produced
+`artifacts/coverage/normalized-property-focused-20261028/`: 47.8% line and
+39.3% branch coverage across four assemblies. This deterministic property test
+complements but does not substitute for the unrun coverage-guided fuzz campaign.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
