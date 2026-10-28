@@ -256,6 +256,20 @@ passed, 0 failed, and 0 skipped tests. The pinned
 `d5ee002acb7fb29a5371080722029cd687fca43214ae826d26293ebe34590d27`, and
 SBY-script hash `f70e7571c44ad4888dae4766e3f91e3680f14e6da7ea65f31eec2ef50bb0b137`.
 
+## Stage-1 external matrix
+
+The C# `yosys-stage1-matrix` runner executes every currently paired fixture
+serially and preserves a separate timestamped artifact for each job. On
+2026-10-28 it completed successfully after a release build and the 54-pass
+focused Build-option/bridge test run. The five result artifacts were
+`20261028-145723-4448735` (counter `FAIL`),
+`20261028-145725-3338027` (signed compare `PASS`),
+`20261028-145726-3802078` (initialized counter `FAIL`),
+`20261028-145727-3742165` (initialized signed control/data `FAIL`), and
+`20261028-145728-4735392` (concurrent nonblocking registers `FAIL`) beneath
+`artifacts/yosys-stage1/`. This is a reproducibility checkpoint for the tested
+fixture set, not a claim that untested Stage-1 operators or frontends conform.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,

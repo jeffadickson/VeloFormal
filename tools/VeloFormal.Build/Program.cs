@@ -17,6 +17,7 @@ if (options.Mode == "yosys-stage1-positive") return YosysStage1.RunPositive(root
 if (options.Mode == "yosys-stage1-deterministic") return YosysStage1.RunDeterministicNegative(root, Console.Out, Console.Error);
 if (options.Mode == "yosys-stage1-signed") return YosysStage1.RunSignedDeterministicNegative(root, Console.Out, Console.Error);
 if (options.Mode == "yosys-stage1-concurrent") return YosysStage1.RunConcurrentNegative(root, Console.Out, Console.Error);
+if (options.Mode == "yosys-stage1-matrix") return YosysStage1.RunMatrix(root, Console.Out, Console.Error);
 if (options.Mode == "rtl")
 {
     string directory = Path.Combine(root, "artifacts", "rtl", Guid.NewGuid().ToString("N"));

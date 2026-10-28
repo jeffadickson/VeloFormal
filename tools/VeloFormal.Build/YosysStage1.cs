@@ -37,6 +37,24 @@ public static class YosysStage1
     public static int RunConcurrentNegative(string root, TextWriter output, TextWriter error)
         => RunFixture(root, output, error, ConcurrentNegative);
 
+    /// <summary>
+    /// Executes every presently paired Stage-1 fixture serially. Each fixture
+    /// retains its own timestamped artifact, so a matrix failure never hides
+    /// successful sibling evidence or overwrites a witness.
+    /// </summary>
+    public static int RunMatrix(string root, TextWriter output, TextWriter error)
+    {
+        int failures = 0;
+        foreach (FixtureDefinition fixture in new[] { Negative, Positive, DeterministicNegative, SignedDeterministicNegative, ConcurrentNegative })
+        {
+            int result = RunFixture(root, output, error, fixture);
+            if (result != 0) failures++;
+        }
+        if (failures == 0) output.WriteLine("Stage-1 SBY matrix completed successfully.");
+        else error.WriteLine($"Stage-1 SBY matrix had {failures} failing fixture job(s).");
+        return failures == 0 ? 0 : 1;
+    }
+
     private static int RunFixture(string root, TextWriter output, TextWriter error, FixtureDefinition fixture)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);

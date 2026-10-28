@@ -127,13 +127,15 @@ dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-positive
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-deterministic
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-signed
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-matrix
 ```
 
-The first command requires the negative fixture's expected `FAIL`; the second
-requires the signed fixture's expected bounded `PASS`; the third runs the
-initialized and constrained negative fixture for witness comparison. Missing
-tools exit 2 with a diagnostic artifact. From the fixture directory, the
-equivalent direct external commands are:
+The first command requires the original negative fixture's expected `FAIL`; the
+second requires the signed fixture's expected bounded `PASS`; the subsequent
+single-fixture commands exercise initialized or concurrent witnesses. The final
+matrix command executes all currently paired jobs, retaining separate artifacts
+for each. Missing tools exit 2 with a diagnostic artifact. From the fixture
+directory, the equivalent direct external commands are:
 
 ```powershell
 sby -f counter-bound.sby
