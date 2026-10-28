@@ -19,6 +19,21 @@ not have `yosys`, `yosys-smtbmc`, `sby`, `iverilog`, `verilator`, or `slang` on
 
 The current VeloSim producer gap is tracked in [VeloFormal issue #1](https://github.com/jeffadickson/VeloFormal/issues/1).
 
+## Toolchain probe
+
+Before a differential run, capture the locally configured external tools with:
+
+```powershell
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-probe
+```
+
+The probe checks `yosys`, `yosys-smtbmc`, `sby`, and `slang`, or the explicit
+`YOSYS`, `YOSYS_SMTBMC`, `SBY`, and `SLANG` executable paths. It writes a
+timestamped `veloformal.yosys-probe.v1` JSON artifact beneath
+`artifacts/yosys-probe/`. Missing tools are reported as diagnostic evidence and
+do not make the probe fail. Preserve the artifact with a future differential
+record; availability alone is not compatibility evidence.
+
 ## Compatibility ladder
 
 | Stage | Capability | Qualification evidence |

@@ -37,6 +37,17 @@ simulator, elaborator, trace, pass/fail comparison, or performance result is
 claimed. Install a version-pinned environment and execute the Stage-1 matrix in
 `docs/yosys-compatibility-program.md` before claiming Yosys compatibility.
 
+The reproducible C# probe was subsequently run with:
+
+```powershell
+dotnet run --project tools/VeloFormal.Build -c Release --no-build -- yosys-probe
+```
+
+It recorded 0/4 available tools (`yosys`, `yosys-smtbmc`, `sby`, and `slang`)
+in `artifacts/yosys-probe/20261028-134628-2522426/toolchain.json`. That local,
+ignored artifact captures the executable configuration and absence result; it
+is not a formal or differential result.
+
 ## Simulated peer-review follow-up
 
 A simulated review found and the implementation corrected: CLI provenance

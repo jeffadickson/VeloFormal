@@ -1,8 +1,39 @@
 using VeloFormal.Build;
+using System.Text.Json;
 using Xunit;
 namespace VeloFormal.Tests;
 public sealed class BuildOptionTests
 {
+    [Fact]
+    public void YosysProbeWritesVersionedDiagnosticArtifact()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "veloformal-yosys-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            Assert.Equal(0, YosysProbe.Run(root, output, error));
+            string artifact = Directory.GetFiles(Path.Combine(root, "artifacts", "yosys-probe"), "toolchain.json", SearchOption.AllDirectories).Single();
+            using var document = JsonDocument.Parse(File.ReadAllText(artifact));
+            Assert.Equal("veloformal.yosys-probe.v1", document.RootElement.GetProperty("format").GetString());
+            Assert.Equal(4, document.RootElement.GetProperty("tools").GetArrayLength());
+            Assert.Contains("Yosys differential toolchain:", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ParsesYosysProbeModeAndRejectsBuildFlags()
+    {
+        Assert.Equal("yosys-probe", BuildOptions.Parse(["yosys-probe"]).Mode);
+        Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-probe", "--no-build"]));
+    }
+
     public static IEnumerable<object[]> Cases()
     {
         string[][] args = [[], ["test"], ["coverage"], ["rtl"], ["--help"], ["-h"],
