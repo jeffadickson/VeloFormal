@@ -218,6 +218,15 @@ public static class VeloSimNormalizedTranslator
                 "add" => "+", "sub" => "-", "mul" => "*", "and" => "&", "or" => "|", "xor" => "^",
                 "shl" => "<<", "shr" => ">>", _ => throw new InvalidOperationException()
             };
+            // Normalized `shr` follows SystemVerilog logical-shift semantics
+            // even for a signed destination. The DSL `>>` is type-dependent,
+            // so force unsigned operands and cast the fixed-width result back.
+            if (kind == "shr" && resultSigned)
+            {
+                string left = Expression(value.GetProperty("lhs"), signals, stateNames, resultWidth, resultSigned);
+                string right = Expression(value.GetProperty("rhs"), signals, stateNames, resultWidth, resultSigned);
+                return $"signed(unsigned({left}) >> unsigned({right}))";
+            }
             return $"({Expression(value.GetProperty("lhs"), signals, stateNames, resultWidth, resultSigned)} {op} {Expression(value.GetProperty("rhs"), signals, stateNames, resultWidth, resultSigned)})";
         }
         if (kind == "ite")

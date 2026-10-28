@@ -60,6 +60,8 @@ scalar Boolean signals cannot silently become arithmetic operands. Signed and
 unsigned arithmetic operands cannot mix implicitly. Comparisons remain an
 explicit-width unsigned subset by default; `signed: true` selects signed
 bitvector operands. Boolean controls cannot be used in signed comparisons.
+Normalized `shr` is always a logical, zero-filling right shift, including for
+signed destinations; arithmetic right shift is not accepted in this envelope.
 
 ## Formal mapping
 
