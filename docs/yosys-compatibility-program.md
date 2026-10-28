@@ -72,6 +72,27 @@ the separately recorded fixture executions are the evidence.
 | 4 | Induction/PDR and formal proof provenance | Independent unbounded result agreement; never inferred from BMC. |
 | 5 | Multi-clock and liveness | Explicit clock scheduling and engine-specific compatibility evidence. |
 
+## Stage-1 operator qualification ledger
+
+The normalized fixture translator accepts the operators below, but acceptance
+and local Z3 checking are not external compatibility evidence. This ledger
+states the narrower status established by the pinned matrix.
+
+| Semantic feature | Translator status | External paired-fixture status |
+|---|---|---|
+| Active-low synchronous reset and fixed-width constants | Implemented | Qualified in counter fixtures, with declared initial-state and scheduler normalization |
+| Unsigned add and xor | Implemented | Qualified in counter and two-register traces |
+| Two-process concurrent NBA reads | Implemented | Qualified by `two-registers-init` trace |
+| Signed comparison, `ite`, unary negation, signed subtract | Implemented | Qualified by `signed-init` trace |
+| Unsigned comparison and Boolean input control | Implemented | Present in fixture grammar; not separately qualified by an input-varying external trace |
+| Multiply, bitwise and/or, logical shifts | Implemented | Not externally qualified yet |
+| Multiple clocks, memories, hierarchy, parameters, latches, async reset | Rejected | Outside Stage 1 |
+
+“Qualified” here means only that the listed small source-pinned BMC fixture had
+the recorded external status and trace-prefix comparison. It does not imply
+equivalence for arbitrary compositions, widths, depths, or a VeloSim-produced
+artifact.
+
 ## Differential contract
 
 For a fixture in a qualified stage, record:
