@@ -1,7 +1,7 @@
 namespace VeloFormal.Build;
 public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRestore = false)
 {
-    public const string Usage = "usage: dotnet run --project tools/VeloFormal.Build -- [test|coverage|rtl|yosys-probe] [--no-build] [--no-restore]";
+    public const string Usage = "usage: dotnet run --project tools/VeloFormal.Build -- [test|coverage|rtl|yosys-probe|yosys-stage1] [--no-build] [--no-restore]";
     public static BuildOptions Parse(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -10,7 +10,7 @@ public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRest
         var flags = new HashSet<string>(StringComparer.Ordinal);
         foreach (string argument in args)
         {
-            if (argument is "test" or "coverage" or "rtl" or "yosys-probe")
+            if (argument is "test" or "coverage" or "rtl" or "yosys-probe" or "yosys-stage1")
             {
                 if (mode is not null) throw new InputException("specify one build mode");
                 mode = argument;
@@ -22,7 +22,7 @@ public sealed record BuildOptions(string Mode, bool NoBuild = false, bool NoRest
             else throw new InputException($"unknown build argument: {argument}");
         }
         mode ??= "test";
-        if (mode is "rtl" or "yosys-probe" && flags.Count != 0) throw new InputException("build flags do not apply to this mode");
+        if (mode is "rtl" or "yosys-probe" or "yosys-stage1" && flags.Count != 0) throw new InputException("build flags do not apply to this mode");
         return new(mode, flags.Contains("--no-build"), flags.Contains("--no-restore"));
     }
 }

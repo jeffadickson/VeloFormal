@@ -32,6 +32,23 @@ public sealed class BuildOptionTests
     {
         Assert.Equal("yosys-probe", BuildOptions.Parse(["yosys-probe"]).Mode);
         Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-probe", "--no-build"]));
+        Assert.Equal("yosys-stage1", BuildOptions.Parse(["yosys-stage1"]).Mode);
+        Assert.Throws<InputException>(() => BuildOptions.Parse(["yosys-stage1", "--no-build"]));
+    }
+
+    [Fact]
+    public void YosysStage1RejectsMissingFixtureRoot()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "veloformal-yosys-stage1-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+            Assert.Equal(2, YosysStage1.Run(root, output, error));
+            Assert.Contains("fixture files are missing", error.ToString(), StringComparison.Ordinal);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 
     public static IEnumerable<object[]> Cases()

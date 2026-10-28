@@ -79,7 +79,16 @@ witness for each pair to the verification record before marking Stage 1
 qualified.
 
 The prepared negative case is expected to be a bounded counterexample in both
-tools. From the fixture directory, its external half is:
+tools. The preferred C# runner preserves source and script hashes, SBY stdout,
+stderr, exit code, and the SBY status file beneath `artifacts/yosys-stage1/`:
+
+```powershell
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
+```
+
+It exits zero only when SBY reports the fixture's expected `FAIL` status;
+missing tools exit 2 with a diagnostic artifact. From the fixture directory,
+the equivalent direct external command is:
 
 ```powershell
 sby -f counter-bound.sby
@@ -87,7 +96,7 @@ sby -f counter-bound.sby
 
 The checked-in `.sby` file selects BMC depth 3 and Z3. Run it only after
 capturing the pinned toolchain probe; retain its complete status and witness as
-new evidence rather than treating this command template as a result.
+new evidence rather than treating either command template as a result.
 
 ## Near-term next action
 

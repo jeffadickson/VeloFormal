@@ -96,6 +96,17 @@ is at `artifacts/coverage/stage1-negative-focused-20261028/`: 52.9% line and
 41.5% branch coverage across the measured assemblies. It is not external
 differential evidence.
 
+The C# `yosys-stage1` runner was added and executed through its unavailable-tool
+path on 2026-10-28. It returned exit 2 and wrote
+`veloformal.yosys-stage1.v1` evidence with hashes of `counter.sv` and
+`counter-bound.sby`; no SBY result was claimed. The focused Build-options and
+bridge suite had 48 passing tests. Its Coverlet/ReportGenerator result is
+`artifacts/coverage/yosys-stage1-runner-focused-20261028/`: 50.2% line and
+41.4% branch coverage across four assemblies. `VeloFormal.Build.YosysStage1`
+had 11.8% focused line coverage: fixture-preflight and unavailable-tool paths
+are exercised, while the real SBY completion/status paths remain unmeasured
+until a toolchain is available.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

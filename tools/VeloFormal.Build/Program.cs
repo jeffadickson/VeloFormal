@@ -12,6 +12,7 @@ catch (InputException error) { Console.Error.WriteLine(error.Message); Console.E
 if (options.Mode == "help") { Console.WriteLine(BuildOptions.Usage); return 0; }
 bool coverage = options.Mode == "coverage";
 if (options.Mode == "yosys-probe") return YosysProbe.Run(root, Console.Out, Console.Error);
+if (options.Mode == "yosys-stage1") return YosysStage1.Run(root, Console.Out, Console.Error);
 if (options.Mode == "rtl")
 {
     string directory = Path.Combine(root, "artifacts", "rtl", Guid.NewGuid().ToString("N"));
