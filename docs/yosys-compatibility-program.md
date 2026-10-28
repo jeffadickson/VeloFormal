@@ -34,6 +34,30 @@ timestamped `veloformal.yosys-probe.v1` JSON artifact beneath
 do not make the probe fail. Preserve the artifact with a future differential
 record; availability alone is not compatibility evidence.
 
+## Reproducible external environment
+
+YosysHQ describes the OSS CAD Suite as the bundled distribution route for
+Yosys, SymbiYosys/SBY, and supported solvers; its published builds include a
+Windows x64 option. Keep a selected archive outside the source checkout and
+record its archive hash and `yosys-probe` result with a differential run. Do
+not update the system-wide `PATH`; point the current shell at the extracted
+launchers instead:
+
+```powershell
+$suite = Join-Path $env:USERPROFILE 'tools\oss-cad-suite\bin'
+if (-not (Test-Path -LiteralPath $suite -PathType Container)) { throw "Missing OSS CAD Suite bin directory: $suite" }
+$env:YOSYS = Join-Path $suite 'yosys.exe'
+$env:YOSYS_SMTBMC = Join-Path $suite 'yosys-smtbmc.exe'
+$env:SBY = Join-Path $suite 'sby.exe'
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-probe
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
+```
+
+The Stage-1 runner prepends the directory of an absolute `SBY` setting only to
+its child process environment, allowing the portable SBY launcher to find its
+bundled Yosys tools without mutating the host configuration. This setup is a
+tooling recommendation, not evidence that the suite or the fixtures ran.
+
 ## Compatibility ladder
 
 | Stage | Capability | Qualification evidence |

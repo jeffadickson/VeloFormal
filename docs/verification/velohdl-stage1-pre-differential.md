@@ -107,6 +107,14 @@ had 11.8% focused line coverage: fixture-preflight and unavailable-tool paths
 are exercised, while the real SBY completion/status paths remain unmeasured
 until a toolchain is available.
 
+The portable-suite runner path was then rebuilt and its unavailable-tool path
+re-executed: Build-option tests had 23 passes and the runner exited 2 with a
+new diagnostic artifact, as expected. The narrow helper-only coverage artifact
+is `artifacts/coverage/portable-sby-runner-focused-20261028/`; it reports
+23.8% line coverage for `VeloFormal.Build` and 11.2% for `YosysStage1`.
+The absolute-SBY child-process branch remains unmeasured because no portable
+suite has been extracted on this host.
+
 The prepared positive signed fixture then produced `bounded-pass` locally from
 its source-bound normalized artifact and matching VeloFormal contract. Its
 paired SBY script remains unexecuted because SBY is unavailable. The 26-test

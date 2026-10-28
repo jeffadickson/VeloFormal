@@ -38,6 +38,10 @@ public static class YosysStage1
         try
         {
             var start = new ProcessStartInfo(executable) { WorkingDirectory = fixtureDirectory, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            // An explicit portable-suite launcher must resolve its sibling Yosys
+            // executables without requiring a machine-wide PATH modification.
+            if (Path.IsPathRooted(executable))
+                start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
             start.ArgumentList.Add("-f");
             start.ArgumentList.Add("-d");
             start.ArgumentList.Add(Path.Combine(directory, "sby"));
