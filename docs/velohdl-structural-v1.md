@@ -40,6 +40,9 @@ The VeloHdl fixture grammar has:
   of a destination-width constant and whose else branch is a nonblocking write
   to the same destination;
 - one unique destination per process (multiple writers are rejected);
+- an optional prospective-only `initial` array that assigns every state exactly
+  once with a destination-width constant; current VeloSim normalized v1 rejects
+  this field rather than silently treating it as a producer capability;
 - else expressions formed from `const`, `ref`, bitwise `not`, arithmetic `neg`, `add`, `sub`, `mul`,
   `and`, `or`, `xor`, `shl`, `shr`, and `ite`;
 - `ite` conditions formed from scalar `ref`, `not`, Boolean `and`/`or`, and
@@ -64,8 +67,11 @@ At frame `t`, each destination's expression is evaluated over the complete
 frame-`t` signal valuation. At `t + 1`, reset writes zero; otherwise the
 expression becomes the next value. Consequently, distinct processes have
 nonblocking, concurrent semantics even when one expression reads another
-process's state. Initial state is deliberately unconstrained: a reset branch is
-not treated as evidence that reset occurred before the checked trace.
+process's state. Without `initial`, state is deliberately unconstrained: a reset
+branch is not treated as evidence that reset occurred before the checked trace.
+When prospective `initial` is present, it becomes a complete time-zero state
+constraint; it is intended for differential fixtures with replayable witnesses,
+not as a claim about the current VeloSim producer.
 
 The resulting model is passed to VeloFormal's bounded Z3 checker. `bounded-pass`
 only states that no violation was found through the requested finite depth; it

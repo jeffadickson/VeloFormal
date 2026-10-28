@@ -12,6 +12,28 @@ namespace VeloFormal.Tests;
 /// <summary>Exercises the versioned HDL artifact boundary without requiring a VeloSim checkout.</summary>
 public sealed class VeloHdlAdapterTests
 {
+    [Fact]
+    public void LowersCompleteProspectiveInitialStateAndRejectsPartialOrCurrentProducerState()
+    {
+        const string normalized = """
+            {"format":"velohdl.normalized.v1","signals":[{"name":"clk","width":1},{"name":"rst_n","width":1},{"name":"count","width":8}],"processes":[{"kind":"always_ff","event":{"edge":"posedge","signal":"clk"},"body":{"kind":"if","condition":{"kind":"not","operand":{"kind":"ref","name":"rst_n"}},"then":{"kind":"nba","target":"count","value":{"kind":"const","value":0}},"else":{"kind":"nba","target":"count","value":{"kind":"add","lhs":{"kind":"ref","name":"count"},"rhs":{"kind":"const","value":1}}}}}],"initial":[{"target":"count","value":{"kind":"const","value":0}}]}
+            """;
+        var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
+        var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter");
+        using (var emitted = JsonDocument.Parse(design.ModelJson()))
+            Assert.Equal("(count == 8'd0)", emitted.RootElement.GetProperty("init").GetString());
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant initial: count == 8'd0\nend");
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 0)).Status);
+
+        string partial = normalized.Replace("[{\"target\":\"count\",\"value\":{\"kind\":\"const\",\"value\":0}}]", "[]", StringComparison.Ordinal);
+        var partialProvenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", partial);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(partial, partialProvenance, "counter"));
+        string current = normalized.Replace("velohdl.normalized.v1", "velosim.uhdm.normalized.v1", StringComparison.Ordinal);
+        var currentProvenance = StructuralProvenance.Create("module counter;", "VeloSim", "fixture", current);
+        Assert.Throws<InvalidDataException>(() => VeloSimNormalizedTranslator.Translate(current, currentProvenance, "counter"));
+    }
+
     private const string Hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     [Fact]

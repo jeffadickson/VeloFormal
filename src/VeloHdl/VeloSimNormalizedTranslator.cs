@@ -21,10 +21,14 @@ public static class VeloSimNormalizedTranslator
         {
             using var document = JsonDocument.Parse(normalizedJson);
             var root = document.RootElement;
-            Fields(root, "format", "signals", "processes");
             string normalizedFormat = Text(root, "format");
             if (normalizedFormat is not ("velosim.uhdm.normalized.v1" or "velohdl.normalized.v1"))
                 throw new InvalidDataException("Unsupported normalized structural format.");
+            bool hasInitial = root.TryGetProperty("initial", out var initial);
+            if (normalizedFormat == "velosim.uhdm.normalized.v1" || !hasInitial)
+                Fields(root, "format", "signals", "processes");
+            else
+                Fields(root, "format", "signals", "processes", "initial");
             var signals = root.GetProperty("signals").EnumerateArray().Select(ParseSignal).ToArray();
             if (signals.Select(signal => signal.Name).Distinct(StringComparer.Ordinal).Count() != signals.Length)
                 throw new InvalidDataException("Normalized UHDM has duplicate signal names.");
@@ -44,6 +48,7 @@ public static class VeloSimNormalizedTranslator
             if (normalizedFormat == "velosim.uhdm.normalized.v1" && !IsCurrentVeloSimV1Counter(processes, lowered))
                 throw new InvalidDataException("The current VeloSim normalized v1 producer supports only one reset/increment process.");
             var states = lowered.Select(process => process.State.Name).ToHashSet(StringComparer.Ordinal);
+            string modelInitial = hasInitial ? InitialState(initial, signals, states) : "true";
             string modelSignals = string.Join(",", signals.Select(signal =>
             {
                 string kind = states.Contains(signal.Name) ? "state" : "input";
@@ -57,7 +62,7 @@ public static class VeloSimNormalizedTranslator
             }));
             string modelNext = string.Join(",", lowered.Select(process =>
                 $"{JsonSerializer.Serialize(process.State.Name)}:{JsonSerializer.Serialize($"ite(!{reset}, {process.ResetValue}, {process.Next})")}"));
-            string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{modelNext}}}}}";
+            string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":{JsonSerializer.Serialize(modelInitial)},\"next\":{{{modelNext}}}}}";
             string envelope = $"{{\"format\":\"{StructuralDesign.Format}\",\"provenance\":{{\"source_sha256\":{JsonSerializer.Serialize(provenance.SourceSha256)},\"frontend\":{JsonSerializer.Serialize(provenance.Frontend)},\"frontend_revision\":{JsonSerializer.Serialize(provenance.FrontendRevision)},\"normalized_ir_sha256\":{JsonSerializer.Serialize(provenance.NormalizedIrSha256)},\"adapter\":{JsonSerializer.Serialize(provenance.Adapter)},\"adapter_version\":{JsonSerializer.Serialize(provenance.AdapterVersion)}}},\"model\":{model}}}";
             return StructuralDesign.Parse(envelope);
         }
@@ -121,6 +126,30 @@ public static class VeloSimNormalizedTranslator
             CultureInfo.InvariantCulture, out var constant) || !FitsConstant(constant, width, signed))
             throw new InvalidDataException("Constant does not fit the destination width.");
         return constant.Sign < 0 ? $"-({Literal(width, signed, BigInteger.Abs(constant))})" : Literal(width, signed, constant);
+    }
+
+    /// <summary>
+    /// Lowers a prospective fixture's complete time-zero state assignment. A
+    /// complete assignment is required so a deterministic witness cannot hide
+    /// an unconstrained register behind a partially specified initialization.
+    /// Current VeloSim normalized v1 deliberately has no such field.
+    /// </summary>
+    private static string InitialState(JsonElement initial, Signal[] signals, IReadOnlySet<string> states)
+    {
+        if (initial.ValueKind != JsonValueKind.Array || initial.GetArrayLength() != states.Count)
+            throw new InvalidDataException("Initial state must assign every state exactly once.");
+        var assignments = new List<string>();
+        var assigned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var assignment in initial.EnumerateArray())
+        {
+            Fields(assignment, "target", "value");
+            string target = Text(assignment, "target");
+            Signal? signal = signals.SingleOrDefault(candidate => candidate.Name == target);
+            if (signal is null || !states.Contains(target) || !assigned.Add(target))
+                throw new InvalidDataException("Initial state target must be a unique state signal.");
+            assignments.Add($"({target} == {Constant(assignment.GetProperty("value"), signal.Width, signal.Signed)})");
+        }
+        return string.Join(" && ", assignments);
     }
 
     private static string Destination(JsonElement process)
