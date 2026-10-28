@@ -1,0 +1,13 @@
+[options]
+mode bmc
+depth 4
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv counter-init.sv
+prep -top counter_init
+
+[files]
+counter-init.sv

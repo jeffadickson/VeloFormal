@@ -95,6 +95,12 @@ The repository contains paired, source-controlled inputs under
 - `counter.sv`, `counter.normalized.json`, `counter-bound.vfc`, and
   `counter-bound.sby`: the actual current VeloSim zero-reset/increment envelope
   shape, with a deliberately failing `count < 2` BMC property;
+- `counter-init.sv`, `counter-init.normalized.json`, `counter-init-bound.vfc`,
+  and `counter-init-bound.sby`: a prospective complete-initial-state fixture
+  with an explicit `rst_n` assumption, used to compare a deterministic failing
+  counter prefix. Its SBY depth is one step greater than VeloFormal's source
+  state-frame depth because an `always_ff` assertion samples pre-NBA state while
+  the emitted SBY VCD records the post-NBA state at that edge;
 - `signed-compare.sv`, `signed-compare.normalized.json`, and
   `signed-compare.vfc`: prospective VeloHdl signed reset, comparison, and
   unary-negation semantics;
@@ -115,16 +121,19 @@ stderr, exit code, and the SBY status file beneath `artifacts/yosys-stage1/`:
 ```powershell
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1
 dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-positive
+dotnet run --project tools/VeloFormal.Build -c Release -- yosys-stage1-deterministic
 ```
 
 The first command requires the negative fixture's expected `FAIL`; the second
-requires the signed fixture's expected bounded `PASS`. Missing tools exit 2
-with a diagnostic artifact. From the fixture directory, the equivalent direct
-external commands are:
+requires the signed fixture's expected bounded `PASS`; the third runs the
+initialized and constrained negative fixture for witness comparison. Missing
+tools exit 2 with a diagnostic artifact. From the fixture directory, the
+equivalent direct external commands are:
 
 ```powershell
 sby -f counter-bound.sby
 sby -f signed-compare-pass.sby
+sby -f counter-init-bound.sby
 ```
 
 The checked-in `.sby` file selects BMC depth 3 and Z3. Run it only after

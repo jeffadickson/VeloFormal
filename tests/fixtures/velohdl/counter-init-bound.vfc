@@ -1,0 +1,5 @@
+contract CounterInitBound for counter_init
+    clock posedge clk
+    require reset_inactive: rst_n
+    invariant count_below_two: count < 8'd2
+end

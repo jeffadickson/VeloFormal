@@ -188,6 +188,37 @@ whole Stage-1 profile nor a general Yosys-compatible frontend: only two small,
 source-pinned fixtures have matched bounded statuses, and the current VeloSim
 checkout remains dirty and unqualified as a producer.
 
+## Initialized counterexample replay fixture
+
+The prospective fixture grammar now permits an optional complete `initial`
+state assignment. It rejects partial assignments and keeps the field outside
+the current VeloSim normalized-v1 boundary. This supports a source-pinned
+`counter-init` fixture whose SystemVerilog `initial count = 8'd0` and FORMAL
+assumption `rst_n` match the normalized initial assignment and VeloFormal
+`require reset_inactive: rst_n` clause.
+
+The release build and focused Build-option/bridge run completed with 52 passed,
+0 failed, and 0 skipped tests. The VeloFormal check at source-state depth 3
+wrote `artifacts/differential/20261028-145310-counter-init/` and reported a
+counterexample at sample 2 with the exact prefix `(rst_n,count)` of `(1,0)`,
+`(1,1)`, `(1,2)`. Its source hash is
+`db6acfa8234e613ae99eb92a417d3682edafcb7076485703548f6c769108d209` and its
+normalized IR hash is
+`b56970e23a72e5c1b764f68f3ed08789723bb8ca4f68595421df85fb2440b39b`.
+
+The `yosys-stage1-deterministic` runner executed the same source and
+`counter-init-bound.sby` through the pinned SBY/Z3 suite. Its result is
+`artifacts/yosys-stage1/20261028-145233-4781866/result.json`; it reports
+expected `FAIL` (raw status `FAIL 2 0`), source hash
+`db6acfa8234e613ae99eb92a417d3682edafcb7076485703548f6c769108d209`, and
+script hash `2b931bb75bd764d529c6f4012ca3d708f2c31f8a3d564671a6218a337bfe5fdd`.
+The SBY VCD has `(rst_n,count)` `(1,0)`, `(1,1)`, `(1,2)`, `(1,3)` at steps
+0 through 3. Its failed clocked assertion at step 3 sampled the pre-NBA value
+`count=2`; the VCD records the post-NBA value `count=3`. Therefore the first
+three VCD states replay the VeloFormal trace exactly, while the final VCD state
+is its required post-update observation. This one-step horizon/scheduling
+normalization is explicit fixture metadata, not an unexamined verdict match.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,

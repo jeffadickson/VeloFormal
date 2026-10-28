@@ -7,6 +7,10 @@
     <None Include="../fixtures/velohdl/counter.sv" Link="fixtures/velohdl/counter.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.vfc" Link="fixtures/velohdl/counter-bound.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.sby" Link="fixtures/velohdl/counter-bound.sby" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/counter-init.normalized.json" Link="fixtures/velohdl/counter-init.normalized.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/counter-init.sv" Link="fixtures/velohdl/counter-init.sv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/counter-init-bound.vfc" Link="fixtures/velohdl/counter-init-bound.vfc" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/counter-init-bound.sby" Link="fixtures/velohdl/counter-init-bound.sby" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/two-registers.normalized.json" Link="fixtures/velohdl/two-registers.normalized.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/signed-compare.normalized.json" Link="fixtures/velohdl/signed-compare.normalized.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/signed-compare.sv" Link="fixtures/velohdl/signed-compare.sv" CopyToOutputDirectory="PreserveNewest" />

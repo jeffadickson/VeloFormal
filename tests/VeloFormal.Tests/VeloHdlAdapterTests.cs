@@ -265,6 +265,26 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void InitializedCounterFixtureProducesAConstrainedCounterexample()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-init.sv"));
+        string normalized = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-init.normalized.json"));
+        string contractText = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-init-bound.vfc"));
+        string sby = File.ReadAllText(Path.Combine(fixtureDirectory, "counter-init-bound.sby"));
+        Assert.Contains("initial count = 8'd0", source, StringComparison.Ordinal);
+        Assert.Contains("assume (rst_n)", source, StringComparison.Ordinal);
+        Assert.Contains("depth 4", sby, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create(source, "VeloHdlFixture", "stage1-fixture", normalized);
+        var model = VeloHdlAdapter.ToTransitionModel(VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter_init"));
+        var report = BoundedChecker.Check(SemanticBinder.Bind(ContractParser.Parse(contractText), model), new SolverOptions(Depth: 3));
+        Assert.Equal("counterexample", report.Status);
+        Assert.Equal("0", report.Counterexample![0].Values["count"]);
+        Assert.Equal("1", report.Counterexample[1].Values["count"]);
+        Assert.Equal("2", report.Counterexample[2].Values["count"]);
+    }
+
+    [Fact]
     public void LowersNegativeSignedConstantsWithinTheirMathematicalRange()
     {
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
