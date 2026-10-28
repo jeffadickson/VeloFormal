@@ -49,7 +49,9 @@ The VeloHdl fixture grammar has:
 State destinations and non-scalar inputs are unsigned by default, or signed
 bitvectors when their explicit `signed` flag is true. Unsigned scalar inputs are
 Boolean controls. Constants inherit the destination signedness and must fit its
-width. References of another bitvector width acquire an explicit `resize`;
+mathematical range: `0` through `2^width-1` for unsigned destinations, and
+`-2^(width-1)` through `2^(width-1)-1` for signed destinations. References of
+another bitvector width acquire an explicit `resize`;
 scalar Boolean signals cannot silently become arithmetic operands. Signed and
 unsigned arithmetic operands cannot mix implicitly. Comparisons remain an
 explicit-width unsigned subset by default; `signed: true` selects signed

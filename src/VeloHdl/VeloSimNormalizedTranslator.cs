@@ -155,10 +155,10 @@ public static class VeloSimNormalizedTranslator
         {
             Fields(value, "kind", "value");
             var literal = value.GetProperty("value");
-            if (literal.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(literal.GetRawText(), NumberStyles.None,
-                CultureInfo.InvariantCulture, out var constant) || constant.Sign < 0 || constant.GetBitLength() > resultWidth)
+            if (literal.ValueKind != JsonValueKind.Number || !BigInteger.TryParse(literal.GetRawText(), NumberStyles.AllowLeadingSign,
+                CultureInfo.InvariantCulture, out var constant) || !FitsConstant(constant, resultWidth, resultSigned))
                 throw new InvalidDataException("Constant does not fit the destination width.");
-            return Literal(resultWidth, resultSigned, constant);
+            return constant.Sign < 0 ? $"-({Literal(resultWidth, resultSigned, BigInteger.Abs(constant))})" : Literal(resultWidth, resultSigned, constant);
         }
         if (kind == "ref")
         {
@@ -263,6 +263,18 @@ public static class VeloSimNormalizedTranslator
     }
 
     private static string Literal(int width, bool signed, BigInteger value) => $"{width}'{(signed ? "s" : string.Empty)}d{value}";
+
+    /// <summary>
+    /// Interprets normalized signed constants as mathematical values, rather than
+    /// accepting an out-of-range decimal spelling that happens to share a bit pattern.
+    /// The emitted unary form preserves the DSL's fixed-width two's-complement rules.
+    /// </summary>
+    private static bool FitsConstant(BigInteger value, int width, bool signed)
+    {
+        BigInteger minimum = signed ? -(BigInteger.One << (width - 1)) : BigInteger.Zero;
+        BigInteger maximum = (BigInteger.One << (signed ? width - 1 : width)) - 1;
+        return value >= minimum && value <= maximum;
+    }
 
     private static void Fields(JsonElement value, params string[] names)
     {

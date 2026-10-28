@@ -54,6 +54,14 @@ passing and no failures or skips. Its Coverlet/ReportGenerator artifact is
 The extension is exercised through translation, VeloFormal binding, and bounded
 Z3 checking; it does not constitute a Yosys differential result.
 
+Negative signed constant lowering was checked with 21 focused bridge tests
+passing and no failures or skips. It accepts only the declared mathematical
+range for each signed destination and emits fixed-width unary two's-complement
+expressions. The focused Coverlet/ReportGenerator artifact is
+`artifacts/coverage/signed-constants-focused-20261028/`: 52.8% line and 41.2%
+branch coverage across all measured assemblies. This remains a focused-scope
+metric and pre-differential evidence only.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
