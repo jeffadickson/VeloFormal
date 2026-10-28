@@ -1,0 +1,4 @@
+contract SignedCompareBound for signed_compare
+    clock posedge clk
+    invariant signed_upper_bound: count <= 8'sd127
+end

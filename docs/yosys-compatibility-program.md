@@ -70,7 +70,9 @@ The repository contains paired, source-controlled inputs under
   shape, with a deliberately failing `count < 2` BMC property;
 - `signed-compare.sv`, `signed-compare.normalized.json`, and
   `signed-compare.vfc`: prospective VeloHdl signed reset, comparison, and
-  unary-negation semantics.
+  unary-negation semantics;
+- `signed-compare-pass.vfc` and `signed-compare-pass.sby`: a prospective
+  bounded-pass property over that signed fixture.
 
 The test suite binds each normalized artifact to the exact fixture source hash;
 the prospective pair is not claimed to have been produced by VeloSim. Once a

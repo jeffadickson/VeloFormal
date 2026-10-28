@@ -107,6 +107,15 @@ had 11.8% focused line coverage: fixture-preflight and unavailable-tool paths
 are exercised, while the real SBY completion/status paths remain unmeasured
 until a toolchain is available.
 
+The prepared positive signed fixture then produced `bounded-pass` locally from
+its source-bound normalized artifact and matching VeloFormal contract. Its
+paired SBY script remains unexecuted because SBY is unavailable. The 26-test
+focused bridge run produced
+`artifacts/coverage/stage1-positive-focused-20261028/`: 47.8% line and 39.3%
+branch coverage across the four measured assemblies. The lower aggregate metric
+is a scope artifact (the Build helper assembly is included); it is not
+comparable to earlier three-assembly or full-suite figures.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,

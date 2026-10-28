@@ -11,6 +11,8 @@
     <None Include="../fixtures/velohdl/signed-compare.normalized.json" Link="fixtures/velohdl/signed-compare.normalized.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/signed-compare.sv" Link="fixtures/velohdl/signed-compare.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/signed-compare.vfc" Link="fixtures/velohdl/signed-compare.vfc" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/signed-compare-pass.vfc" Link="fixtures/velohdl/signed-compare-pass.vfc" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/signed-compare-pass.sby" Link="fixtures/velohdl/signed-compare-pass.sby" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />

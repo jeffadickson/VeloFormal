@@ -208,6 +208,23 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void PairedSignedBoundFixtureProducesTheExpectedBoundedPass()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "signed-compare.sv"));
+        string normalized = File.ReadAllText(Path.Combine(fixtureDirectory, "signed-compare.normalized.json"));
+        string contractText = File.ReadAllText(Path.Combine(fixtureDirectory, "signed-compare-pass.vfc"));
+        string sby = File.ReadAllText(Path.Combine(fixtureDirectory, "signed-compare-pass.sby"));
+        Assert.Contains("assert (count <= 8'sd127)", source, StringComparison.Ordinal);
+        Assert.Contains("mode bmc", sby, StringComparison.Ordinal);
+        var provenance = StructuralProvenance.Create(source, "VeloHdlFixture", "stage1-fixture", normalized);
+        var model = VeloHdlAdapter.ToTransitionModel(VeloSimNormalizedTranslator.Translate(normalized, provenance, "signed_compare"));
+        var report = BoundedChecker.Check(SemanticBinder.Bind(ContractParser.Parse(contractText), model), new SolverOptions(Depth: 3));
+        Assert.Equal("bounded-pass", report.Status);
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), report.InputProvenance?.SourceSha256);
+    }
+
+    [Fact]
     public void PairedCounterBoundFixtureProducesTheExpectedBoundedCounterexample()
     {
         string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");

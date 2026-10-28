@@ -11,4 +11,11 @@ module signed_compare (
         else
             count <= count - 8'sd1;
     end
+
+`ifdef FORMAL
+    // Every signed eight-bit value is at most signed 127. This is the Stage-1
+    // positive differential fixture paired with a VeloFormal invariant.
+    always_ff @(posedge clk)
+        assert (count <= 8'sd127);
+`endif
 endmodule
