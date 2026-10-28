@@ -176,11 +176,16 @@ public sealed class VeloHdlAdapterTests
         string fixture = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl", "counter.normalized.json"));
         string normalized = fixture.Replace("velosim.uhdm.normalized.v1", "velohdl.normalized.v1", StringComparison.Ordinal)
             .Replace("{\"name\":\"count\",\"width\":8}", "{\"name\":\"count\",\"width\":8,\"signed\":true}", StringComparison.Ordinal)
-            .Replace("\"kind\":\"add\"", "\"kind\":\"shr\"", StringComparison.Ordinal);
+            .Replace("\"kind\":\"add\"", "\"kind\":\"shr\"", StringComparison.Ordinal)
+            .Replace("\"value\":0", "\"value\":-2", StringComparison.Ordinal)
+            .Replace("]}", "],\"initial\":[{\"target\":\"count\",\"value\":{\"kind\":\"const\",\"value\":-2}}]}", StringComparison.Ordinal);
         var provenance = StructuralProvenance.Create("module counter;", "VeloHdlFixture", "fixture", normalized);
         var design = VeloSimNormalizedTranslator.Translate(normalized, provenance, "counter");
         using var lowered = JsonDocument.Parse(design.ModelJson());
         Assert.Contains("signed(unsigned(count) >> unsigned(8'sd1))", lowered.RootElement.GetProperty("next").GetProperty("count").GetString(), StringComparison.Ordinal);
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        var contract = ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant remains_negative: count < 8'sd0\nend");
+        Assert.Equal("counterexample", BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: 2)).Status);
     }
 
     [Fact]
