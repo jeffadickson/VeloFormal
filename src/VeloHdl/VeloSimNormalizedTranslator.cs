@@ -175,6 +175,11 @@ public static class VeloSimNormalizedTranslator
             Fields(value, "kind", "operand");
             return $"~({Expression(value.GetProperty("operand"), signals, stateNames, resultWidth, resultSigned)})";
         }
+        if (kind == "neg")
+        {
+            Fields(value, "kind", "operand");
+            return $"-({Expression(value.GetProperty("operand"), signals, stateNames, resultWidth, resultSigned)})";
+        }
         if (kind is "add" or "sub" or "mul" or "and" or "or" or "xor" or "shl" or "shr")
         {
             Fields(value, "kind", "lhs", "rhs");

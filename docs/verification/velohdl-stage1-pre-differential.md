@@ -62,6 +62,13 @@ expressions. The focused Coverlet/ReportGenerator artifact is
 branch coverage across all measured assemblies. This remains a focused-scope
 metric and pre-differential evidence only.
 
+Unary signed negation was exercised through structural translation, model
+binding, and BMC with 22 focused bridge tests passing. Coverlet and
+ReportGenerator produced
+`artifacts/coverage/unary-negation-focused-20261028/`: 52.9% line and 41.4%
+branch coverage across all measured assemblies in that focused scope. It is not
+comparable to full-suite coverage and provides no external differential result.
+
 ## Differential limitation
 
 At inspection, commands `yosys`, `yosys-smtbmc`, `sby`, `iverilog`,
