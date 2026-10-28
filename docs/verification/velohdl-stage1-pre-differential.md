@@ -298,6 +298,14 @@ external SBY runs remain separate evidence and do not substitute for mutation
 testing. Diagnose the Stryker project-discovery failure before claiming a
 mutation campaign for this checkout.
 
+## Current full regression run
+
+After the logical signed-right-shift correction and its semantic regression
+test, `dotnet test tests/VeloFormal.Tests/VeloFormal.Tests.csproj -c Release
+--no-restore` completed on 2026-10-28 with 671 passed, 0 failed, and 0 skipped
+tests. This is a full managed regression result; it does not rerun the external
+SBY matrix or turn bounded checks into proofs.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,
