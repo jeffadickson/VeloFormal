@@ -2,7 +2,7 @@
   <DataCollectionRunSettings><DataCollectors>
     <DataCollector friendlyName="XPlat Code Coverage"><Configuration>
       <Format>cobertura</Format>
-      <Include>[VeloFormal]*</Include>
+      <Include>[VeloFormal]*,[VeloFormal.Cli]*,[VeloHdl]*</Include>
       <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
     </Configuration></DataCollector>
   </DataCollectors></DataCollectionRunSettings>

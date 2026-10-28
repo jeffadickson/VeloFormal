@@ -22,8 +22,9 @@ newest published `Microsoft.Z3` package as of 2026-10-27, so no speculative
 solver upgrade has been applied. The release test suite exercises its native
 Z3 integration on this machine.
 
-`FsCheck.Xunit` supplies deterministic formatter-idempotence properties; the
-current replay seed is `123456,789013`. `System.CommandLine` validates the CLI
+`FsCheck.Xunit` supplies deterministic formatter-idempotence and
+format-then-parse expression-evaluation properties; their replay seeds are
+`123456,789013` and `246813,135791`. `System.CommandLine` validates the CLI
 option vocabulary before the compatibility-preserving command adapter dispatches
 it. StrictDoc requirements reside in `requirements/VeloFormal.sdoc` and can be
 exported with `strictdoc export requirements --output-dir artifacts/strictdoc`.
@@ -61,6 +62,11 @@ dotnet run --project src/VeloFormal.Cli -- --check-contract examples/counter.vfc
 ```
 
 The checked-in counter example intentionally reports `incomplete` at finite depth because an unconstrained final-sample increment can still create an obligation past the horizon. A `bounded-pass` is finite-horizon evidence only, never a proof. See [the contract-language profile](docs/contract-language-v0.2.md) for supported syntax, status codes, and exclusions.
+
+VeloSim's normalized UHDM counter/reset subset can be bridged through a versioned,
+provenance-carrying VeloHdl envelope; see the [bridge work package](docs/velosim-bridge-work-package.md). This is a deliberately limited synchronous subset, not general SystemVerilog elaboration.
+The exact v1 envelope and its accepted normalized-UHDM subset are specified in
+[VeloHdl structural envelope v1](docs/velohdl-structural-v1.md).
 
 ## Python compatibility reference
 

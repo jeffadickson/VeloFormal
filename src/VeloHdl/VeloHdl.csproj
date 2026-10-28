@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>VeloHdl</AssemblyName>
+    <RootNamespace>VeloHdl</RootNamespace>
+  </PropertyGroup>
+</Project>

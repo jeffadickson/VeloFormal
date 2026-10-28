@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Text.Json;
 using VeloFormal.Language;
 using VeloFormal.Solving;
+using VeloHdl;
 
 namespace VeloFormal;
 
@@ -39,6 +41,42 @@ internal static class ContractCommand
         };
     }
 
+    internal static string TranslateVeloSimNormalized(string[] args)
+    {
+        string normalizedPath = RequiredValue(args, "--translate-velosim-normalized");
+        string module = RequiredValue(args, "--module");
+        string sourcePath = RequiredValue(args, "--source");
+        string revision = RequiredValue(args, "--frontend-revision");
+        RejectUnknown(args, "--translate-velosim-normalized", "--module", "--source", "--frontend-revision");
+        string normalized = Read(normalizedPath);
+        var provenance = StructuralProvenance.Create(Read(sourcePath), "VeloSim", revision, normalized);
+        return VeloSimNormalizedTranslator.Translate(normalized, provenance, module).ToJson();
+    }
+
+    /// <summary>
+    /// Verifies a saved VeloHdl envelope against supplied source and normalized-IR
+    /// bytes. This is intentionally separate from checking, which may receive only
+    /// the envelope and therefore can report declared provenance only.
+    /// </summary>
+    internal static object VerifyVeloHdl(string[] args)
+    {
+        string envelopePath = RequiredValue(args, "--verify-velohdl");
+        string sourcePath = RequiredValue(args, "--source");
+        string normalizedPath = RequiredValue(args, "--normalized-ir");
+        RejectUnknown(args, "--verify-velohdl", "--source", "--normalized-ir");
+        var design = StructuralDesign.Parse(Read(envelopePath));
+        if (design.Provenance.SourceSha256 != StructuralProvenance.CalculateSha256(Read(sourcePath)))
+            throw new InvalidDataException("Source hash does not match the VeloHdl envelope.");
+        if (design.Provenance.NormalizedIrSha256 != StructuralProvenance.CalculateSha256(Read(normalizedPath)))
+            throw new InvalidDataException("Normalized IR hash does not match the VeloHdl envelope.");
+        return new
+        {
+            status = "verified",
+            format = StructuralDesign.Format,
+            provenance = design.Provenance
+        };
+    }
+
     internal static SolverReport Check(string[] args)
     {
         string contractPath = RequiredValue(args, "--check-contract");
@@ -48,7 +86,7 @@ internal static class ContractCommand
         int maxQueries = OptionalPositiveInt(args, "--max-queries", 4096, 1, 10000);
         RejectUnknown(args, "--check-contract", "--model", "--depth", "--timeout-ms", "--max-queries");
         var contract = ContractParser.Parse(Read(contractPath), contractPath);
-        var model = TransitionModel.Parse(Read(modelPath), modelPath);
+        var model = ParseModel(Read(modelPath), modelPath);
         return BoundedChecker.Check(SemanticBinder.Bind(contract, model), new SolverOptions(Depth: depth, TimeoutMilliseconds: timeout, MaxQueries: maxQueries));
     }
 
@@ -59,6 +97,16 @@ internal static class ContractCommand
     {
         if (path == "-") throw new InputException("contract and model commands require named files");
         return File.ReadAllText(path);
+    }
+
+    /// <summary>Accepts either the direct transition-model format or a provenance-declared VeloHdl envelope.</summary>
+    private static TransitionModel ParseModel(string text, string path)
+    {
+        using var document = JsonDocument.Parse(text);
+        if (document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("format", out var format) &&
+            format.ValueKind == JsonValueKind.String && format.GetString() == StructuralDesign.Format)
+            return VeloHdlAdapter.ToTransitionModel(StructuralDesign.Parse(text));
+        return TransitionModel.Parse(text, path);
     }
 
     private static string RequiredValue(string[] args, string option)

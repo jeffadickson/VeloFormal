@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Numerics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using VeloHdl;
 
 namespace VeloFormal.Language;
 public enum SortKind { Boolean, Bits, Integer }
@@ -20,10 +21,16 @@ public sealed class TransitionModel
     public ExprSyntax Initial { get; }
     public IReadOnlyDictionary<string, ExprSyntax> Next { get; }
     public IReadOnlyDictionary<string, BigInteger> Parameters { get; }
+    /// <summary>
+    /// Identifies an external, provenance-bearing structural artifact when this model
+    /// was lowered from one. Direct JSON models intentionally have no such binding.
+    /// </summary>
+    public StructuralProvenance? InputProvenance { get; }
     public TransitionModel(string module, string clock, IEnumerable<SignalDeclaration> signals, ExprSyntax initial,
-        IEnumerable<KeyValuePair<string, ExprSyntax>> next, IEnumerable<KeyValuePair<string, BigInteger>>? parameters = null)
+        IEnumerable<KeyValuePair<string, ExprSyntax>> next, IEnumerable<KeyValuePair<string, BigInteger>>? parameters = null,
+        StructuralProvenance? inputProvenance = null)
     {
-        Module = module; Clock = clock; Initial = initial;
+        Module = module; Clock = clock; Initial = initial; InputProvenance = inputProvenance;
         Signals = Array.AsReadOnly(signals.ToArray());
         if (!NameValid(module) || !NameValid(clock) || Signals.Count > 256) throw new InputException("invalid module, clock, or signal count");
         if (Signals.Any(s => !NameValid(s.Name) || s.Name is "true" or "false" ||

@@ -33,6 +33,37 @@ RELATIONS:
 [[/SECTION]]
 
 [[SECTION]]
+TITLE: RTL bridge
+
+[REQUIREMENT]
+UID: VF-RTL-001
+STATUS: Draft
+TITLE: Preserve VeloSim source provenance at the formal boundary
+STATEMENT: A future VeloSim RTL bridge shall consume a pinned, versioned structural representation and record the source, frontend, schema, and adapter provenance for every formal input.
+RATIONALE: Simulation artifacts and formal transition models must remain distinguishable and reproducible.
+RELATIONS:
+- TYPE: File
+  VALUE: docs/velosim-bridge-work-package.md
+- TYPE: File
+  VALUE: docs/velohdl-structural-v1.md
+- TYPE: File
+  VALUE: src/VeloHdl/StructuralDesign.cs
+- TYPE: File
+  VALUE: src/VeloHdl/VeloSimNormalizedTranslator.cs
+- TYPE: File
+  VALUE: src/VeloFormal/VeloHdlAdapter.cs
+- TYPE: File
+  VALUE: src/VeloFormal/Solving/BoundedChecker.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/VeloHdlAdapterTests.cs
+- TYPE: File
+  VALUE: tests/VeloFormal.Tests/ContractCliTests.cs
+- TYPE: File
+  VALUE: docs/verification/velohdl-bridge-v1.md
+
+[[/SECTION]]
+
+[[SECTION]]
 TITLE: Bounded verification
 
 [REQUIREMENT]

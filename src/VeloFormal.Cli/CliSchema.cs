@@ -16,7 +16,8 @@ internal static class CliSchema
         {
             "--trace", "--samples", "--contract", "--vcd", "--clock",
             "--parse-contract", "--format-contract", "--check-contract", "--model",
-            "--depth", "--timeout-ms", "--max-queries"
+            "--depth", "--timeout-ms", "--max-queries", "--translate-velosim-normalized",
+            "--module", "--source", "--normalized-ir", "--frontend-revision", "--verify-velohdl"
         })
             root.Options.Add(new Option<string>(option));
         // Waveform checking deliberately accepts several distinct signal mappings.

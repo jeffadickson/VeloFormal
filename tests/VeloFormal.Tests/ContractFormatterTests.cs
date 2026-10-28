@@ -38,6 +38,30 @@ public sealed class ContractFormatterTests
         Assert.Equal(first.Name, second.Name); Assert.Equal(first.Module, second.Module); Assert.Equal(first.Clock, second.Clock);
         Assert.Equal(first.Parameters.Count, second.Parameters.Count); Assert.Equal(first.Clauses.Count, second.Clauses.Count);
         Assert.Equal(first.Operations.Count, second.Operations.Count);
+        Assert.Equal(StructuralFingerprint(first), StructuralFingerprint(second));
         Assert.Equal(formatted, ContractFormatter.Format(second));
     }
+
+    /// <summary>
+    /// Captures the contract meaning that survives canonicalization while deliberately
+    /// ignoring source locations, line endings, comments, and redundant grouping nodes.
+    /// </summary>
+    private static string StructuralFingerprint(ContractSyntax contract) => string.Join("|",
+        [contract.Name, contract.Module, contract.Clock,
+            contract.Reset is null ? "reset:none" : "reset:" + Expression(contract.Reset),
+            .. contract.Parameters.Select(p => "parameter:" + p.Name + "=" + Expression(p.Constraint)),
+            .. contract.Clauses.Select(c => $"clause:{c.Role}:{c.Label}={Expression(c.Expression)}"),
+            .. contract.Operations.Select(o => "operation:" + o.Name + "=" + Expression(o.Trigger) + ":" + string.Join(",", o.Ensures.Select(e =>
+                $"ensure:{e.Label}:{Expression(e.Earliest)}:{Expression(e.Latest)}:{Expression(e.Expression)}")))]);
+
+    private static string Expression(ExprSyntax expression) => expression switch
+    {
+        GroupedSyntax group => Expression(group.Expression),
+        LiteralSyntax literal => "literal(" + literal.Text + ")",
+        NameSyntax name => "name(" + name.Name + ")",
+        UnarySyntax unary => "unary(" + unary.Operator + "," + Expression(unary.Operand) + ")",
+        BinarySyntax binary => "binary(" + binary.Operator + "," + Expression(binary.Left) + "," + Expression(binary.Right) + ")",
+        CallSyntax call => "call(" + call.Name + "," + string.Join(",", call.Arguments.Select(Expression)) + ")",
+        _ => throw new InvalidOperationException("Unknown expression node.")
+    };
 }

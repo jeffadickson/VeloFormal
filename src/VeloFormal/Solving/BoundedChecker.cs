@@ -23,6 +23,8 @@ public sealed record SolverReport(string Status, int Depth, string Engine, strin
 {
     public bool IsProof => false;
     public int LastFeasibleSample { get; init; } = -1;
+    /// <summary>Declared frontend provenance, if the checked model came from a VeloHdl envelope.</summary>
+    public VeloHdl.StructuralProvenance? InputProvenance { get; init; }
 }
 public static class BoundedChecker
 {
@@ -47,7 +49,7 @@ public static class BoundedChecker
             new(status, options.Depth, engine, contract.Syntax.Name, contract.Model.Module, contract.Model.Clock,
                 findings ?? Array.Empty<SolverFinding>(), frames ?? Array.Empty<SolverFrame>(),
                 Array.AsReadOnly(covers.Values.ToArray()), Array.AsReadOnly(triggers.Values.ToArray()), pendingLabels.AsReadOnly(), reason)
-                { LastFeasibleSample = lastFeasible };
+                { LastFeasibleSample = lastFeasible, InputProvenance = contract.Model.InputProvenance };
         Status Query()
         {
             cancellationToken.ThrowIfCancellationRequested();

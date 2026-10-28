@@ -17,7 +17,7 @@ namespace VeloFormal
         {
             if (args.Length == 0 || args is ["--help"] or ["-h"])
             {
-                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --parse-contract FILE, --format-contract FILE, --check-contract FILE --model FILE [--depth N] [--timeout-ms N] [--max-queries N], --help");
+                output.WriteLine("VeloFormal: --trace FILE (or - for stdin), --demo, --samples FILE --contract FILE, --vcd FILE --contract FILE --clock PATH --signal NAME=PATH, --parse-contract FILE, --format-contract FILE, --translate-velosim-normalized FILE --module NAME --source FILE --frontend-revision REVISION, --verify-velohdl FILE --source FILE --normalized-ir FILE, --check-contract FILE --model FILE [--depth N] [--timeout-ms N] [--max-queries N], --help");
                 return 0;
             }
             try
@@ -26,6 +26,16 @@ namespace VeloFormal
                 if (args.Contains("--format-contract", StringComparer.Ordinal))
                 {
                     output.Write(ContractCommand.Format(args));
+                    return 0;
+                }
+                if (args.Contains("--translate-velosim-normalized", StringComparer.Ordinal))
+                {
+                    output.Write(ContractCommand.TranslateVeloSimNormalized(args));
+                    return 0;
+                }
+                if (args.Contains("--verify-velohdl", StringComparer.Ordinal))
+                {
+                    output.WriteLine(JsonSerializer.Serialize(ContractCommand.VerifyVeloHdl(args), JsonOptions));
                     return 0;
                 }
                 if (args.Contains("--parse-contract", StringComparer.Ordinal))
@@ -63,7 +73,7 @@ namespace VeloFormal
                 output.WriteLine(JsonSerializer.Serialize(report, JsonOptions));
                 return report.Status == "trace-pass" ? 0 : 1;
             }
-            catch (Exception exception) when (exception is InputException or LanguageException or IOException or UnauthorizedAccessException or ArgumentException)
+            catch (Exception exception) when (exception is InputException or LanguageException or IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException or System.Text.Json.JsonException)
             {
                 error.WriteLine($"veloformal: {exception.Message}");
                 return 2;
