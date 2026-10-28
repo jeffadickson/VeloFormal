@@ -284,6 +284,20 @@ and matrix branches were not all induced. This focused metric is not comparable
 to earlier full-suite coverage figures and does not measure external SBY child
 processes as managed code.
 
+## Mutation-testing limitation
+
+Stryker.NET 4.16.0 was invoked both with the repository's existing core
+configuration and with explicit solution, target-project, test-project, and
+translator-file arguments for VeloHdl. In each case it stopped during project
+analysis with `No project found, check settings and ensure project file is not
+corrupted`, before generating any mutant or test session. A temporary direct
+VeloHdl project reference was also tried and did not change that outcome; it
+was not retained. Consequently there is no current mutation score, killed or
+survived-mutant count for this Stage-1 delta. The successful Coverlet and
+external SBY runs remain separate evidence and do not substitute for mutation
+testing. Diagnose the Stryker project-discovery failure before claiming a
+mutation campaign for this checkout.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,
