@@ -51,6 +51,8 @@ RELATIONS:
 - TYPE: File
   VALUE: src/VeloHdl/VeloSimNormalizedTranslator.cs
 - TYPE: File
+  VALUE: src/VeloHdl/VeloSimRtlTranslator.cs
+- TYPE: File
   VALUE: src/VeloFormal/VeloHdlAdapter.cs
 - TYPE: File
   VALUE: src/VeloFormal/Solving/BoundedChecker.cs
@@ -62,6 +64,8 @@ RELATIONS:
   VALUE: tests/VeloFormal.Tests/ContractCliTests.cs
 - TYPE: File
   VALUE: docs/verification/velohdl-bridge-v1.md
+- TYPE: File
+  VALUE: docs/design/2026-11-12-velohdl-velosim-rtl-bridge.md
 
 [REQUIREMENT]
 UID: VF-RTL-002

@@ -13,6 +13,31 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void LowersTwoStateImplicitClockVeloSimRtlCounterAndRejectsFourStateOrTimedForms()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"add","args":[{"kind":"ref","name":"q"},{"kind":"const","bits":"00000001"}]}}}
+            """;
+        var provenance = StructuralProvenance.Create("module counter(input bit clk, output bit [7:0] q);", "VeloSim", "3a2953c", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "counter");
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        Assert.Equal("counter", model.Module);
+        Assert.Equal("clk", model.Clock);
+        using (var lowered = JsonDocument.Parse(design.ModelJson()))
+            Assert.Equal("(q + 8'd1)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+        Assert.Equal("counterexample", BoundedChecker.Check(SemanticBinder.Bind(
+            ContractParser.Parse("contract C for counter\n    clock posedge clk\n    invariant bounded: q < 8'd2\nend"), model),
+            new SolverOptions(Depth: 3)).Status);
+
+        string fourState = rtl.Replace("\"two_state\":true", "\"two_state\":false", StringComparison.Ordinal);
+        Assert.Throws<InvalidDataException>(() => VeloSimRtlTranslator.Translate(fourState,
+            StructuralProvenance.Create("source", "VeloSim", "3a2953c", fourState), "counter"));
+        string timed = rtl[..^1] + ",\"timed\":[]}";
+        Assert.Throws<InvalidDataException>(() => VeloSimRtlTranslator.Translate(timed,
+            StructuralProvenance.Create("source", "VeloSim", "3a2953c", timed), "counter"));
+    }
+
+    [Fact]
     public void LowersCompleteProspectiveInitialStateAndRejectsPartialOrCurrentProducerState()
     {
         const string normalized = """
