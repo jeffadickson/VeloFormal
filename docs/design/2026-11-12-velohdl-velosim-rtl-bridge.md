@@ -44,6 +44,13 @@ the producer schema and carries a pinned VeloSim commit. A future producer
 update creates a new manifest and fixture, runs compatibility tests, and is
 accepted only after the supported-subset result is recorded.
 
+The first direct-export fixture was generated from VeloSim revision
+`3a2953c4faaafab846a9b8ffd03b0935660b9054`. Its legacy `compile` path failed
+after UHDM elaboration because it routed the structural output through the old
+normalized-UHDM consumer; the direct exporter succeeds. This confirmed
+formal-only integration gap is tracked as
+[VeloFormal issue #2](https://github.com/jeffadickson/VeloFormal/issues/2).
+
 ## Accepted Stage A subset
 
 The adapter accepts exactly one synchronous clocked design:

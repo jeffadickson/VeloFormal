@@ -1,0 +1,24 @@
+{
+  "format": "velohdl.velosim-producer-manifest.v1",
+  "velosim_repository": "https://github.com/jeffadickson/VeloSim.git",
+  "velosim_revision": "3a2953c4faaafab846a9b8ffd03b0935660b9054",
+  "producer_tree_clean": false,
+  "unrelated_dirty_paths": ["prompt.md"],
+  "source": {
+    "path": "tests/fixtures/velohdl/velosim-bit-register.sv",
+    "decoded_utf8_sha256": "84b842f83501316d32c2047de6d8a2e2ddf902fbb198bfec98e4c4363a7034d8"
+  },
+  "structural_rtl": {
+    "format": "velosim.rtl.v1",
+    "path": "tests/fixtures/velohdl/velosim-bit-register.rtl.json",
+    "decoded_utf8_sha256": "ef8d2a974143384c6bb543a38c0939f66a916b770d388a50b7daf6b014b52b84"
+  },
+  "producer": {
+    "command": "velosim-uhdm-rtl <surelog.uhdm> <design.rtl.json> velosim_bit_register",
+    "exporter_sha256": "c70b9b5e72ded1b79d8354acf05f0f2f124d8ea11cf838960a6092c3f7f9b6c2",
+    "host": "WSL2",
+    "generated_utc": "2026-11-13"
+  },
+  "formal_subset": "VeloHdl.VeloSimRtlTranslator/1: two-state implicit-clock whole-word NBA",
+  "qualification": "bridge-fixture only; not a Yosys/SymbiYosys equivalence claim"
+}

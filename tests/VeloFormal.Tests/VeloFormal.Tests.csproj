@@ -4,6 +4,9 @@
     <None Include="../../examples/counter.vfc" Link="examples/counter.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../examples/counter.model" Link="examples/counter.model" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter.normalized.json" Link="fixtures/velohdl/counter.normalized.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-bit-register.sv" Link="fixtures/velohdl/velosim-bit-register.sv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-bit-register.rtl.json" Link="fixtures/velohdl/velosim-bit-register.rtl.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-bit-register.manifest.json" Link="fixtures/velohdl/velosim-bit-register.manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter.sv" Link="fixtures/velohdl/counter.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.vfc" Link="fixtures/velohdl/counter-bound.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.sby" Link="fixtures/velohdl/counter-bound.sby" CopyToOutputDirectory="PreserveNewest" />

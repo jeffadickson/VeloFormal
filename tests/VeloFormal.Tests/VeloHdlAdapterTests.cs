@@ -13,6 +13,28 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void ConsumesPinnedVeloSimProducedTwoStateArtifact()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-register.sv"));
+        string rtl = File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-register.rtl.json"));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-register.manifest.json")));
+        var root = manifest.RootElement;
+        Assert.Equal("velohdl.velosim-producer-manifest.v1", root.GetProperty("format").GetString());
+        Assert.Equal("3a2953c4faaafab846a9b8ffd03b0935660b9054", root.GetProperty("velosim_revision").GetString());
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), root.GetProperty("source").GetProperty("decoded_utf8_sha256").GetString());
+        Assert.Equal(StructuralProvenance.CalculateSha256(rtl), root.GetProperty("structural_rtl").GetProperty("decoded_utf8_sha256").GetString());
+        var provenance = StructuralProvenance.Create(source, "VeloSim", root.GetProperty("velosim_revision").GetString()!, rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "velosim_bit_register");
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        using (var lowered = JsonDocument.Parse(design.ModelJson()))
+            Assert.Equal("data", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(
+            ContractParser.Parse("contract C for velosim_bit_register\n    clock posedge clk\n    invariant well_formed: true\nend"), model),
+            new SolverOptions(Depth: 2)).Status);
+    }
+
+    [Fact]
     public void LowersParallelNonblockingProcessesFromTheSameClockSnapshot()
     {
         const string rtl = """
