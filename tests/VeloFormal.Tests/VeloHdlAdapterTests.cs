@@ -13,6 +13,23 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void LowersParallelNonblockingProcessesFromTheSameClockSnapshot()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"a","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true},{"name":"r","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"parallel","items":[{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"a"}},{"kind":"nba","target":{"kind":"ref","name":"r"},"value":{"kind":"ref","name":"q"}}]}}
+            """;
+        var provenance = StructuralProvenance.Create("module pipeline(input bit clk, input bit [7:0] a);", "VeloSim", "3a2953c", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "pipeline");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("a", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+        Assert.Equal("q", lowered.RootElement.GetProperty("next").GetProperty("r").GetString());
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        Assert.Equal("counterexample", BoundedChecker.Check(SemanticBinder.Bind(
+            ContractParser.Parse("contract C for pipeline\n    clock posedge clk\n    invariant no_same_cycle_bypass: r == a\nend"), model),
+            new SolverOptions(Depth: 1)).Status);
+    }
+
+    [Fact]
     public void LowersTwoStateImplicitClockVeloSimRtlCounterAndRejectsFourStateOrTimedForms()
     {
         const string rtl = """

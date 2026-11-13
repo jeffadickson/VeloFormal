@@ -47,25 +47,16 @@ public static class VeloSimRtlTranslator
             if (clockSignal is null || clockSignal.Width != 1 || clockSignal.Direction != "input")
                 throw new InvalidDataException("Stage A requires a scalar input clock.");
 
-            var body = root.GetProperty("body");
-            Fields(body, "kind", "target", "value");
-            if (Text(body, "kind") != "nba") throw new InvalidDataException("Stage A requires an implicit-clock nonblocking body.");
-            var target = body.GetProperty("target");
-            Fields(target, "kind", "name");
-            if (Text(target, "kind") != "ref") throw new InvalidDataException("Stage A only assigns whole signal references.");
-            string state = Text(target, "name");
-            var stateSignal = signals.SingleOrDefault(signal => signal.Name == state);
-            if (stateSignal is null || state == clock || stateSignal.Direction == "input")
-                throw new InvalidDataException("Stage A state destination is invalid.");
-
-            string next = Expression(body.GetProperty("value"), signals, stateSignal.Width, stateSignal.Signed);
+            var assignments = Assignments(root.GetProperty("body"), signals, clock);
+            var states = assignments.Select(static assignment => assignment.Signal.Name).ToHashSet(StringComparer.Ordinal);
             string modelSignals = string.Join(',', signals.Select(signal =>
             {
-                string kind = signal.Name == state ? "state" : "input";
-                string type = signal.Name == state || signal.Width != 1 ? signal.Signed ? "signed" : "unsigned" : "bool";
+                string kind = states.Contains(signal.Name) ? "state" : "input";
+                string type = states.Contains(signal.Name) || signal.Width != 1 ? signal.Signed ? "signed" : "unsigned" : "bool";
                 return $"{{\"name\":{JsonSerializer.Serialize(signal.Name)},\"type\":\"{type}\"{(type == "bool" ? "" : $",\"width\":{signal.Width}")},\"kind\":\"{kind}\"}}";
             }));
-            string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{JsonSerializer.Serialize(state)}:{JsonSerializer.Serialize(next)}}}}}";
+            string next = string.Join(',', assignments.Select(assignment => $"{JsonSerializer.Serialize(assignment.Signal.Name)}:{JsonSerializer.Serialize(Expression(assignment.Value, signals, assignment.Signal.Width, assignment.Signal.Signed))}"));
+            string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{next}}}}}";
             var emitted = new StructuralProvenance(provenance.SourceSha256, provenance.Frontend, provenance.FrontendRevision,
                 provenance.NormalizedIrSha256, Adapter, AdapterVersion);
             string envelope = $"{{\"format\":\"{StructuralDesign.Format}\",\"provenance\":{{\"source_sha256\":{JsonSerializer.Serialize(emitted.SourceSha256)},\"frontend\":{JsonSerializer.Serialize(emitted.Frontend)},\"frontend_revision\":{JsonSerializer.Serialize(emitted.FrontendRevision)},\"normalized_ir_sha256\":{JsonSerializer.Serialize(emitted.NormalizedIrSha256)},\"adapter\":{JsonSerializer.Serialize(Adapter)},\"adapter_version\":\"{AdapterVersion}\"}},\"model\":{model}}}";
@@ -78,6 +69,39 @@ public static class VeloSimRtlTranslator
     }
 
     private sealed record Signal(string Name, int Width, string Direction, bool Signed);
+    private sealed record Assignment(Signal Signal, JsonElement Value);
+
+    /// <summary>Collects disjoint nonblocking updates evaluated from the same source frame.</summary>
+    private static Assignment[] Assignments(JsonElement body, IReadOnlyList<Signal> signals, string clock)
+    {
+        JsonElement[] updates;
+        string kind = Text(body, "kind");
+        if (kind == "nba") updates = [body];
+        else if (kind == "parallel")
+        {
+            Fields(body, "kind", "items");
+            updates = body.GetProperty("items").EnumerateArray().ToArray();
+            if (updates.Length is < 1 or > 256) throw new InvalidDataException("Stage A parallel body must contain one through 256 updates.");
+        }
+        else throw new InvalidDataException("Stage A requires an implicit-clock nonblocking body.");
+
+        var result = new List<Assignment>(updates.Length);
+        var destinations = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var update in updates)
+        {
+            Fields(update, "kind", "target", "value");
+            if (Text(update, "kind") != "nba") throw new InvalidDataException("Stage A accepts only nonblocking updates.");
+            var target = update.GetProperty("target");
+            Fields(target, "kind", "name");
+            if (Text(target, "kind") != "ref") throw new InvalidDataException("Stage A only assigns whole signal references.");
+            string name = Text(target, "name");
+            var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+            if (signal is null || name == clock || signal.Direction == "input" || !destinations.Add(name))
+                throw new InvalidDataException("Stage A state destination is invalid or has multiple writers.");
+            result.Add(new(signal, update.GetProperty("value").Clone()));
+        }
+        return [.. result];
+    }
 
     private static Signal ParseSignal(JsonElement signal)
     {
