@@ -105,13 +105,18 @@ public static class VeloSimRtlTranslator
 
     private static Signal ParseSignal(JsonElement signal)
     {
-        Fields(signal, "name", "width", "direction", "two_state");
+        OptionalFields(signal, ["name", "width", "direction", "two_state"], ["signed"]);
         string name = Text(signal, "name");
         int width = signal.GetProperty("width").GetInt32();
         string direction = Text(signal, "direction");
         if (width is < 1 or > 256 || direction is not ("input" or "output" or "internal") || !signal.GetProperty("two_state").GetBoolean())
             throw new InvalidDataException("Stage A requires bounded two-state signals.");
-        return new(name, width, direction, Signed: false);
+        bool signed = signal.TryGetProperty("signed", out var sign) && sign.ValueKind == JsonValueKind.True
+            ? true
+            : signal.TryGetProperty("signed", out sign) && sign.ValueKind != JsonValueKind.False
+                ? throw new InvalidDataException("RTL signal signedness must be Boolean.")
+                : false;
+        return new(name, width, direction, signed);
     }
 
     private static string Expression(JsonElement value, IReadOnlyList<Signal> signals, int width, bool signed)
@@ -126,10 +131,16 @@ public static class VeloSimRtlTranslator
         }
         if (kind == "const")
         {
-            Fields(value, "kind", "bits");
+            OptionalFields(value, ["kind", "bits"], ["signed"]);
             string bits = Text(value, "bits");
             if (bits.Length != width || bits.Any(bit => bit is not ('0' or '1'))) throw new InvalidDataException("Stage A constants must be known destination-width bits.");
-            return $"{width}'d{BinaryValue(bits)}";
+            bool constantSigned = value.TryGetProperty("signed", out var sign) && sign.ValueKind == JsonValueKind.True
+                ? true
+                : value.TryGetProperty("signed", out sign) && sign.ValueKind != JsonValueKind.False
+                    ? throw new InvalidDataException("RTL constant signedness must be Boolean.")
+                    : false;
+            if (constantSigned != signed) throw new InvalidDataException("Stage A arithmetic requires explicit matching signedness.");
+            return $"{width}{(signed ? "'sd" : "'d")}{BinaryValue(bits)}";
         }
         if (kind == "add")
         {
@@ -169,6 +180,17 @@ public static class VeloSimRtlTranslator
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Expected a JSON object.");
         var properties = value.EnumerateObject().ToArray();
         if (properties.Length != names.Length || !properties.Select(static property => property.Name).ToHashSet(StringComparer.Ordinal).SetEquals(names))
+            throw new InvalidDataException("Unexpected, duplicate, or missing RTL fields.");
+    }
+
+    private static void OptionalFields(JsonElement value, IReadOnlyCollection<string> required, IReadOnlyCollection<string> optional)
+    {
+        if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Expected a JSON object.");
+        var properties = value.EnumerateObject().ToArray();
+        var names = properties.Select(static property => property.Name).ToHashSet(StringComparer.Ordinal);
+        var requiredNames = required.ToHashSet(StringComparer.Ordinal);
+        if (!requiredNames.IsSubsetOf(names) || !names.IsSubsetOf(requiredNames.Concat(optional).ToHashSet(StringComparer.Ordinal)) ||
+            properties.Length != names.Count)
             throw new InvalidDataException("Unexpected, duplicate, or missing RTL fields.");
     }
 }

@@ -13,6 +13,23 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void LowersExplicitlySignedTwoStateAdditionWithoutImplicitMixedArithmetic()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"delta","width":8,"direction":"input","signed":true,"two_state":true},{"name":"q","width":8,"direction":"output","signed":true,"two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"add","args":[{"kind":"ref","name":"q"},{"kind":"const","bits":"00000001","signed":true}]}}}
+            """;
+        var provenance = StructuralProvenance.Create("module signed_counter;", "VeloSim", "fixture", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "signed_counter");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("signed", lowered.RootElement.GetProperty("signals").EnumerateArray().Single(signal => signal.GetProperty("name").GetString() == "q").GetProperty("type").GetString());
+        Assert.Equal("(q + 8'sd1)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+
+        string mixed = rtl.Replace("\"signed\":true,\"two_state\":true}],\"memories\"", "\"two_state\":true}],\"memories\"", StringComparison.Ordinal);
+        Assert.Throws<InvalidDataException>(() => VeloSimRtlTranslator.Translate(mixed,
+            StructuralProvenance.Create("module signed_counter;", "VeloSim", "fixture", mixed), "signed_counter"));
+    }
+
+    [Fact]
     public void ConsumesPinnedVeloSimProducedTwoStateArtifact()
     {
         string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
