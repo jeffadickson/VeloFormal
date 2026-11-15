@@ -13,6 +13,20 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void ConsumesPinnedVeloSimProducedEnableMuxArtifact()
+    {
+        string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-enable-register.sv"));
+        string rtl = File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-enable-register.rtl.json"));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(fixtureDirectory, "velosim-bit-enable-register.manifest.json")));
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), manifest.RootElement.GetProperty("source").GetProperty("decoded_utf8_sha256").GetString());
+        Assert.Equal(StructuralProvenance.CalculateSha256(rtl), manifest.RootElement.GetProperty("structural_rtl").GetProperty("decoded_utf8_sha256").GetString());
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create(source, "VeloSim", "3a2953c4faaafab846a9b8ffd03b0935660b9054", rtl), "velosim_bit_enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(enable, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void LowersTwoBranchEnableIntoExplicitNextStateMux()
     {
         const string rtl = """

@@ -83,6 +83,13 @@ public static class VeloSimRtlTranslator
         JsonElement[] updates;
         string kind = Text(body, "kind");
         if (kind == "if") return [ConditionalAssignment(body, signals, clock)];
+        if (kind == "block")
+        {
+            Fields(body, "kind", "items");
+            var items = body.GetProperty("items").EnumerateArray().ToArray();
+            if (items.Length != 1) throw new InvalidDataException("Stage A root blocks require exactly one synchronous statement.");
+            return Assignments(items[0], signals, clock);
+        }
         if (kind == "nba") updates = [body];
         else if (kind == "parallel")
         {
