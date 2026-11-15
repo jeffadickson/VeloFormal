@@ -55,7 +55,13 @@ public static class VeloSimRtlTranslator
                 string type = states.Contains(signal.Name) || signal.Width != 1 ? signal.Signed ? "signed" : "unsigned" : "bool";
                 return $"{{\"name\":{JsonSerializer.Serialize(signal.Name)},\"type\":\"{type}\"{(type == "bool" ? "" : $",\"width\":{signal.Width}")},\"kind\":\"{kind}\"}}";
             }));
-            string next = string.Join(',', assignments.Select(assignment => $"{JsonSerializer.Serialize(assignment.Signal.Name)}:{JsonSerializer.Serialize(Expression(assignment.Value, signals, assignment.Signal.Width, assignment.Signal.Signed))}"));
+            string next = string.Join(',', assignments.Select(assignment =>
+            {
+                string whenTrue = Expression(assignment.Value, signals, assignment.Signal.Width, assignment.Signal.Signed);
+                string value = assignment.Condition is null ? whenTrue
+                    : $"ite({assignment.Condition}, {whenTrue}, {Expression(assignment.ElseValue!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed)})";
+                return $"{JsonSerializer.Serialize(assignment.Signal.Name)}:{JsonSerializer.Serialize(value)}";
+            }));
             string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{next}}}}}";
             var emitted = new StructuralProvenance(provenance.SourceSha256, provenance.Frontend, provenance.FrontendRevision,
                 provenance.NormalizedIrSha256, Adapter, AdapterVersion);
@@ -69,13 +75,14 @@ public static class VeloSimRtlTranslator
     }
 
     private sealed record Signal(string Name, int Width, string Direction, bool Signed);
-    private sealed record Assignment(Signal Signal, JsonElement Value);
+    private sealed record Assignment(Signal Signal, JsonElement Value, string? Condition = null, JsonElement? ElseValue = null);
 
     /// <summary>Collects disjoint nonblocking updates evaluated from the same source frame.</summary>
     private static Assignment[] Assignments(JsonElement body, IReadOnlyList<Signal> signals, string clock)
     {
         JsonElement[] updates;
         string kind = Text(body, "kind");
+        if (kind == "if") return [ConditionalAssignment(body, signals, clock)];
         if (kind == "nba") updates = [body];
         else if (kind == "parallel")
         {
@@ -101,6 +108,40 @@ public static class VeloSimRtlTranslator
             result.Add(new(signal, update.GetProperty("value").Clone()));
         }
         return [.. result];
+    }
+
+    /// <summary>Lowers a complete two-branch nonblocking assignment into an explicit formal mux.</summary>
+    private static Assignment ConditionalAssignment(JsonElement statement, IReadOnlyList<Signal> signals, string clock)
+    {
+        Fields(statement, "kind", "condition", "then", "else");
+        var whenTrue = SingleAssignment(statement.GetProperty("then"), signals, clock);
+        var whenFalse = SingleAssignment(statement.GetProperty("else"), signals, clock);
+        if (whenTrue.Signal.Name != whenFalse.Signal.Name)
+            throw new InvalidDataException("Stage A if branches must update the same state word.");
+        return new(whenTrue.Signal, whenTrue.Value, BooleanCondition(statement.GetProperty("condition"), signals), whenFalse.Value);
+    }
+
+    private static Assignment SingleAssignment(JsonElement update, IReadOnlyList<Signal> signals, string clock)
+    {
+        Fields(update, "kind", "target", "value");
+        if (Text(update, "kind") != "nba") throw new InvalidDataException("Stage A branches require nonblocking updates.");
+        var target = update.GetProperty("target");
+        Fields(target, "kind", "name");
+        if (Text(target, "kind") != "ref") throw new InvalidDataException("Stage A only assigns whole signal references.");
+        string name = Text(target, "name");
+        var signal = signals.SingleOrDefault(candidate => candidate.Name == name);
+        if (signal is null || name == clock || signal.Direction == "input") throw new InvalidDataException("Stage A state destination is invalid.");
+        return new(signal, update.GetProperty("value").Clone());
+    }
+
+    private static string BooleanCondition(JsonElement value, IReadOnlyList<Signal> signals)
+    {
+        Fields(value, "kind", "name");
+        if (Text(value, "kind") != "ref") throw new InvalidDataException("Stage A condition must be a scalar input reference.");
+        var signal = signals.SingleOrDefault(candidate => candidate.Name == Text(value, "name"));
+        if (signal is null || signal.Width != 1 || signal.Signed || signal.Direction != "input")
+            throw new InvalidDataException("Stage A condition must be an unsigned scalar input.");
+        return signal.Name;
     }
 
     private static Signal ParseSignal(JsonElement signal)

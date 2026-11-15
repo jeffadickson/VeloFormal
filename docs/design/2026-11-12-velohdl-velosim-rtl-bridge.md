@@ -69,6 +69,9 @@ The adapter accepts exactly one synchronous clocked design:
   processes must all be `posedge` of the declared clock. The implicit form is
   interpreted as a single `posedge clock` process, matching the producer's
   normal one-process export;
+- a root `if` is accepted only for an unsigned scalar input condition and two
+  nonblocking whole-word writes to the same state word; it lowers to an
+  explicit next-state `ite`, preserving frame-snapshot semantics;
 - each formal state word has one writer; a process may use blocking local
   temporaries only after their precise semantics are specified in a later
   increment; Stage A initially accepts nonblocking assignments to whole signal

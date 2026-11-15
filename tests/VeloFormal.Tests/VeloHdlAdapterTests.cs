@@ -13,6 +13,18 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void LowersTwoBranchEnableIntoExplicitNextStateMux()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"enable","width":1,"direction":"input","two_state":true},{"name":"data","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"if","condition":{"kind":"ref","name":"enable"},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"data"}},"else":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"q"}}}}
+            """;
+        var provenance = StructuralProvenance.Create("module enable_register;", "VeloSim", "fixture", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(enable, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void LowersKnownWidthVeloSimBitwiseArithmeticAndShiftExpressions()
     {
         const string rtl = """
