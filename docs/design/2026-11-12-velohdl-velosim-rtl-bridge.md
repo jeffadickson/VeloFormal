@@ -64,14 +64,14 @@ The adapter accepts exactly one synchronous clocked design:
 - exact empty `initialization`, `continuous`, and `combinational` forms are
   accepted because VeloSim's native exporter emits them even when no work is
   present; nonempty forms are rejected in Stage A;
-- one root `body`, either VeloSim's normal implicit-clock statement body, a
-  single explicit edge process, or a root parallel set of processes. Explicit
-  processes must all be `posedge` of the declared clock. The implicit form is
+- one VeloSim implicit-clock statement body, a one-item root block around that
+  body, or a root parallel set of nonblocking updates. The implicit form is
   interpreted as a single `posedge clock` process, matching the producer's
   normal one-process export;
-- a root `if` is accepted only for an unsigned scalar input condition and two
-  nonblocking whole-word writes to the same state word; it lowers to an
-  explicit next-state `ite`, preserving frame-snapshot semantics;
+- a root `if` is accepted only for an unsigned scalar input condition (or its
+  single logical negation) and two nonblocking whole-word writes to the same
+  state word; it lowers to an explicit next-state `ite`, preserving
+  frame-snapshot semantics;
 - each formal state word has one writer; a process may use blocking local
   temporaries only after their precise semantics are specified in a later
   increment; Stage A initially accepts nonblocking assignments to whole signal
@@ -80,9 +80,10 @@ The adapter accepts exactly one synchronous clocked design:
   width-preserving `add`, `sub`, `mul`, `bitand`, `bitor`, `bitxor`, `shl`,
   `shr`, and `ashr`. All operands must match the destination width and declared
   signedness; signed `shr` is lowered as an explicit logical zero-fill shift.
-  Casts, comparisons, unary operators, and conditionals remain rejected until
-  a source-produced fixture and paired external evidence qualify their exact
-  SystemVerilog sizing semantics.
+  A condition-only `not` is supported for the source-produced active-low reset
+  form. Casts, comparisons, other unary operators, and general conditionals
+  remain rejected until a source-produced fixture and paired external evidence
+  qualify their exact SystemVerilog sizing semantics.
 
 Reset and initialization are not inferred. A reset branch is ordinary logic
 until the adapter has an explicit reset contract. `initialization` is rejected
@@ -131,8 +132,8 @@ changes that obscure the semantic lowering.
 
 ## Vertical slices
 
-1. Migrate the solution to .NET 11 and establish a pinned structural fixture
-   plus manifest from VeloSim revision `3a2953c`.
+1. Migrate the solution to .NET 11 and establish pinned structural fixtures
+   plus manifests from explicitly recorded VeloSim revisions.
 2. Add a strict `velosim.rtl.v1` parser and rejection tests for out-of-subset
    producer constructs.
 3. Lower the smallest synchronous NBA counter into `StructuralDesign`; test

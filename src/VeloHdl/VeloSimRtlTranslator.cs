@@ -143,12 +143,23 @@ public static class VeloSimRtlTranslator
 
     private static string BooleanCondition(JsonElement value, IReadOnlyList<Signal> signals)
     {
-        Fields(value, "kind", "name");
-        if (Text(value, "kind") != "ref") throw new InvalidDataException("Stage A condition must be a scalar input reference.");
-        var signal = signals.SingleOrDefault(candidate => candidate.Name == Text(value, "name"));
-        if (signal is null || signal.Width != 1 || signal.Signed || signal.Direction != "input")
-            throw new InvalidDataException("Stage A condition must be an unsigned scalar input.");
-        return signal.Name;
+        string kind = Text(value, "kind");
+        if (kind == "ref")
+        {
+            Fields(value, "kind", "name");
+            var signal = signals.SingleOrDefault(candidate => candidate.Name == Text(value, "name"));
+            if (signal is null || signal.Width != 1 || signal.Signed || signal.Direction != "input")
+                throw new InvalidDataException("Stage A condition must be an unsigned scalar input.");
+            return signal.Name;
+        }
+        if (kind == "not")
+        {
+            Fields(value, "kind", "args");
+            var args = value.GetProperty("args").EnumerateArray().ToArray();
+            if (args.Length != 1) throw new InvalidDataException("Stage A logical negation has arity one.");
+            return "!" + BooleanCondition(args[0], signals);
+        }
+        throw new InvalidDataException("Stage A condition must be a scalar input reference or its logical negation.");
     }
 
     private static Signal ParseSignal(JsonElement signal)
