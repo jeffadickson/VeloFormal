@@ -142,12 +142,21 @@ public static class VeloSimRtlTranslator
             if (constantSigned != signed) throw new InvalidDataException("Stage A arithmetic requires explicit matching signedness.");
             return $"{width}{(signed ? "'sd" : "'d")}{BinaryValue(bits)}";
         }
-        if (kind == "add")
+        if (kind is "add" or "sub" or "mul" or "bitand" or "bitor" or "bitxor" or "shl" or "shr" or "ashr")
         {
             Fields(value, "kind", "args");
             var args = value.GetProperty("args").EnumerateArray().ToArray();
-            if (args.Length != 2) throw new InvalidDataException("Stage A addition has arity two.");
-            return $"({Expression(args[0], signals, width, signed)} + {Expression(args[1], signals, width, signed)})";
+            if (args.Length != 2) throw new InvalidDataException("Stage A binary expression has arity two.");
+            string left = Expression(args[0], signals, width, signed);
+            string right = Expression(args[1], signals, width, signed);
+            if (kind == "shr" && signed)
+                return $"signed(unsigned({left}) >> unsigned({right}))";
+            string op = kind switch
+            {
+                "add" => "+", "sub" => "-", "mul" => "*", "bitand" => "&", "bitor" => "|", "bitxor" => "^",
+                "shl" => "<<", "shr" or "ashr" => ">>", _ => throw new InvalidOperationException()
+            };
+            return $"({left} {op} {right})";
         }
         throw new InvalidDataException("Unsupported Stage A RTL expression.");
     }

@@ -73,10 +73,13 @@ The adapter accepts exactly one synchronous clocked design:
   temporaries only after their precise semantics are specified in a later
   increment; Stage A initially accepts nonblocking assignments to whole signal
   references;
-- expressions initially cover references, binary constants, `castsigned`,
-  `castunsigned`, arithmetic/bitwise binary operators, comparisons, unary
-  operators, and conditional expressions only when their widths and signedness
-  can be lowered without implicit conversion.
+- expressions currently cover references, known binary constants, and
+  width-preserving `add`, `sub`, `mul`, `bitand`, `bitor`, `bitxor`, `shl`,
+  `shr`, and `ashr`. All operands must match the destination width and declared
+  signedness; signed `shr` is lowered as an explicit logical zero-fill shift.
+  Casts, comparisons, unary operators, and conditionals remain rejected until
+  a source-produced fixture and paired external evidence qualify their exact
+  SystemVerilog sizing semantics.
 
 Reset and initialization are not inferred. A reset branch is ordinary logic
 until the adapter has an explicit reset contract. `initialization` is rejected

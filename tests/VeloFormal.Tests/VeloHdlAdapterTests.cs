@@ -13,6 +13,22 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void LowersKnownWidthVeloSimBitwiseArithmeticAndShiftExpressions()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"bitxor","args":[{"kind":"mul","args":[{"kind":"ref","name":"q"},{"kind":"const","bits":"00000011"}]},{"kind":"shl","args":[{"kind":"const","bits":"00000001"},{"kind":"const","bits":"00000010"}]}]}}}
+            """;
+        var provenance = StructuralProvenance.Create("module operators;", "VeloSim", "fixture", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "operators");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("((q * 8'd3) ^ (8'd1 << 8'd2))", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+        var model = VeloHdlAdapter.ToTransitionModel(design);
+        Assert.Equal("bounded-pass", BoundedChecker.Check(SemanticBinder.Bind(
+            ContractParser.Parse("contract C for operators\n    clock posedge clk\n    invariant width: q <= 8'd255\nend"), model),
+            new SolverOptions(Depth: 2)).Status);
+    }
+
+    [Fact]
     public void LowersExplicitlySignedTwoStateAdditionWithoutImplicitMixedArithmetic()
     {
         const string rtl = """
