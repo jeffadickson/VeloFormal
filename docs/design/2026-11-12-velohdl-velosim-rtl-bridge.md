@@ -69,10 +69,11 @@ The adapter accepts exactly one synchronous clocked design:
   implicit form is
   interpreted as a single `posedge clock` process, matching the producer's
   normal one-process export;
-- a root `if` is accepted only for an unsigned scalar input condition (or its
-  single logical negation) and two nonblocking whole-word writes to the same
-  state word; it lowers to an explicit next-state `ite`, preserving
-  frame-snapshot semantics;
+- a root `if` is accepted only for a scalar input condition (or its single
+  logical negation), or the qualified comparisons below. Its branches must be
+  nonblocking whole-word writes to the same state word, except that the
+  producer's empty `else` block explicitly denotes holding that word. It lowers
+  to an explicit next-state `ite`, preserving frame-snapshot semantics;
 - each formal state word has one writer; a process may use blocking local
   temporaries only after their precise semantics are specified in a later
   increment; Stage A initially accepts nonblocking assignments to whole signal
@@ -82,8 +83,9 @@ The adapter accepts exactly one synchronous clocked design:
   `shr`, and `ashr`. All operands must match the destination width and declared
   signedness; signed `shr` is lowered as an explicit logical zero-fill shift.
   A condition-only `not` is supported for the source-produced active-low reset
-  form. Equality is supported only between two whole signal references with
-  identical width and signedness. Casts, other comparisons, other unary
+  form. Equality and less-than are supported only between two whole signal
+  references with identical width and signedness; less-than retains signedness
+  in the lowered VeloFormal expression. Casts, other comparisons, other unary
   operators, literals in comparisons, and general conditionals remain rejected
   until source-produced fixtures and paired external evidence qualify their
   exact SystemVerilog sizing semantics.
