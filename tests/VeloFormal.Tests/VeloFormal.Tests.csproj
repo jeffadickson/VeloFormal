@@ -13,6 +13,9 @@
     <None Include="../fixtures/velohdl/velosim-bit-reset-register.sv" Link="fixtures/velohdl/velosim-bit-reset-register.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/velosim-bit-reset-register.rtl.json" Link="fixtures/velohdl/velosim-bit-reset-register.rtl.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/velosim-bit-reset-register.manifest.json" Link="fixtures/velohdl/velosim-bit-reset-register.manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-two-bit-registers.sv" Link="fixtures/velohdl/velosim-two-bit-registers.sv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-two-bit-registers.rtl.json" Link="fixtures/velohdl/velosim-two-bit-registers.rtl.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-two-bit-registers.manifest.json" Link="fixtures/velohdl/velosim-two-bit-registers.manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter.sv" Link="fixtures/velohdl/counter.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.vfc" Link="fixtures/velohdl/counter-bound.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.sby" Link="fixtures/velohdl/counter-bound.sby" CopyToOutputDirectory="PreserveNewest" />

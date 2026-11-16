@@ -64,8 +64,9 @@ The adapter accepts exactly one synchronous clocked design:
 - exact empty `initialization`, `continuous`, and `combinational` forms are
   accepted because VeloSim's native exporter emits them even when no work is
   present; nonempty forms are rejected in Stage A;
-- one VeloSim implicit-clock statement body, a one-item root block around that
-  body, or a root parallel set of nonblocking updates. The implicit form is
+- one VeloSim implicit-clock statement body, a bounded root block of disjoint
+  supported statements, or a root parallel set of nonblocking updates. The
+  implicit form is
   interpreted as a single `posedge clock` process, matching the producer's
   normal one-process export;
 - a root `if` is accepted only for an unsigned scalar input condition (or its

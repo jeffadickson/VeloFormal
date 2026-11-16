@@ -87,8 +87,11 @@ public static class VeloSimRtlTranslator
         {
             Fields(body, "kind", "items");
             var items = body.GetProperty("items").EnumerateArray().ToArray();
-            if (items.Length != 1) throw new InvalidDataException("Stage A root blocks require exactly one synchronous statement.");
-            return Assignments(items[0], signals, clock);
+            if (items.Length is < 1 or > 256) throw new InvalidDataException("Stage A blocks must contain one through 256 synchronous statements.");
+            var flattened = items.SelectMany(item => Assignments(item, signals, clock)).ToArray();
+            if (flattened.Length is < 1 or > 256 || flattened.Select(static assignment => assignment.Signal.Name).Distinct(StringComparer.Ordinal).Count() != flattened.Length)
+                throw new InvalidDataException("Stage A block state destinations must be unique and bounded.");
+            return flattened;
         }
         if (kind == "nba") updates = [body];
         else if (kind == "parallel")
