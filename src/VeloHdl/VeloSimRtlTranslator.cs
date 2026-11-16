@@ -174,7 +174,7 @@ public static class VeloSimRtlTranslator
             if (args.Length != 1) throw new InvalidDataException("Stage A logical negation has arity one.");
             return "!" + BooleanCondition(args[0], signals);
         }
-        if (kind == "eq")
+        if (kind is "eq" or "lt")
         {
             Fields(value, "kind", "args");
             var args = value.GetProperty("args").EnumerateArray().ToArray();
@@ -183,7 +183,9 @@ public static class VeloSimRtlTranslator
             var right = ComparisonReference(args[1], signals);
             if (left.Width != right.Width || left.Signed != right.Signed)
                 throw new InvalidDataException("Stage A equality requires matching operand width and signedness.");
-            return left.Name + " == " + right.Name;
+            if (kind == "lt" && left.Signed)
+                throw new InvalidDataException("Stage A less-than currently requires unsigned operands.");
+            return left.Name + (kind == "eq" ? " == " : " < ") + right.Name;
         }
         throw new InvalidDataException("Unsupported Stage A condition.");
     }

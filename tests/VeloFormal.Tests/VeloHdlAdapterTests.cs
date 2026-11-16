@@ -13,6 +13,20 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void ConsumesPinnedVeloSimProducedLessThanEnableArtifact()
+    {
+        string directory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(directory, "velosim-bit-less-than-enable-register.sv"));
+        string rtl = File.ReadAllText(Path.Combine(directory, "velosim-bit-less-than-enable-register.rtl.json"));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "velosim-bit-less-than-enable-register.manifest.json")));
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), manifest.RootElement.GetProperty("source").GetProperty("decoded_utf8_sha256").GetString());
+        Assert.Equal(StructuralProvenance.CalculateSha256(rtl), manifest.RootElement.GetProperty("structural_rtl").GetProperty("decoded_utf8_sha256").GetString());
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create(source, "VeloSim", manifest.RootElement.GetProperty("velosim_revision").GetString()!, rtl), "velosim_bit_less_than_enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(q < limit, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void ConsumesPinnedVeloSimProducedEqualityEnableArtifact()
     {
         string directory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
@@ -142,6 +156,18 @@ public sealed class VeloHdlAdapterTests
         var design = VeloSimRtlTranslator.Translate(rtl, provenance, "equality_enable_register");
         using var lowered = JsonDocument.Parse(design.ModelJson());
         Assert.Equal("ite(q == limit, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
+    public void LowersSameWidthUnsignedLessThanCondition()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"limit","width":8,"direction":"input","two_state":true},{"name":"data","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"if","condition":{"kind":"lt","args":[{"kind":"ref","name":"q"},{"kind":"ref","name":"limit"}]},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"data"}},"else":{"kind":"block","items":[]}}}
+            """;
+        var provenance = StructuralProvenance.Create("module less_than_enable_register;", "VeloSim", "fixture", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "less_than_enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(q < limit, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
     }
 
     [Fact]
