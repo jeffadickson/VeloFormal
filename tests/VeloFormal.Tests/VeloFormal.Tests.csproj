@@ -31,6 +31,9 @@
     <None Include="../fixtures/velohdl/velosim-parallel-enabled-registers.sv" Link="fixtures/velohdl/velosim-parallel-enabled-registers.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/velosim-parallel-enabled-registers.rtl.json" Link="fixtures/velohdl/velosim-parallel-enabled-registers.rtl.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/velosim-parallel-enabled-registers.manifest.json" Link="fixtures/velohdl/velosim-parallel-enabled-registers.manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-compound-enable-register.sv" Link="fixtures/velohdl/velosim-compound-enable-register.sv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-compound-enable-register.rtl.json" Link="fixtures/velohdl/velosim-compound-enable-register.rtl.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/velohdl/velosim-compound-enable-register.manifest.json" Link="fixtures/velohdl/velosim-compound-enable-register.manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter.sv" Link="fixtures/velohdl/counter.sv" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.vfc" Link="fixtures/velohdl/counter-bound.vfc" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/velohdl/counter-bound.sby" Link="fixtures/velohdl/counter-bound.sby" CopyToOutputDirectory="PreserveNewest" />

@@ -173,6 +173,17 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersTwoScalarInputConjunctionCondition()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"enable","width":1,"direction":"input","two_state":true},{"name":"ready","width":1,"direction":"input","two_state":true},{"name":"data","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"if","condition":{"kind":"and","args":[{"kind":"ref","name":"enable"},{"kind":"ref","name":"ready"}]},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"data"}},"else":{"kind":"block","items":[]}}}
+            """;
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create("module compound_enable;", "VeloSim", "fixture", rtl), "compound_enable");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite((enable && ready), data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void LowersSameWidthUnsignedEqualityCondition()
     {
         const string rtl = """

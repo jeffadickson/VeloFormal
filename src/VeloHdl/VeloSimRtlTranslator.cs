@@ -178,6 +178,13 @@ public static class VeloSimRtlTranslator
             if (args.Length != 1) throw new InvalidDataException("Stage A logical negation has arity one.");
             return "!" + BooleanCondition(args[0], signals);
         }
+        if (kind == "and")
+        {
+            Fields(value, "kind", "args");
+            var args = value.GetProperty("args").EnumerateArray().ToArray();
+            if (args.Length != 2) throw new InvalidDataException("Stage A logical conjunction has arity two.");
+            return "(" + BooleanCondition(args[0], signals) + " && " + BooleanCondition(args[1], signals) + ")";
+        }
         if (kind is "eq" or "lt")
         {
             Fields(value, "kind", "args");
