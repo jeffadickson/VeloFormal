@@ -174,7 +174,27 @@ public static class VeloSimRtlTranslator
             if (args.Length != 1) throw new InvalidDataException("Stage A logical negation has arity one.");
             return "!" + BooleanCondition(args[0], signals);
         }
-        throw new InvalidDataException("Stage A condition must be a scalar input reference or its logical negation.");
+        if (kind == "eq")
+        {
+            Fields(value, "kind", "args");
+            var args = value.GetProperty("args").EnumerateArray().ToArray();
+            if (args.Length != 2) throw new InvalidDataException("Stage A equality has arity two.");
+            var left = ComparisonReference(args[0], signals);
+            var right = ComparisonReference(args[1], signals);
+            if (left.Width != right.Width || left.Signed != right.Signed)
+                throw new InvalidDataException("Stage A equality requires matching operand width and signedness.");
+            return left.Name + " == " + right.Name;
+        }
+        throw new InvalidDataException("Unsupported Stage A condition.");
+    }
+
+    /// <summary>Restricts comparison operands to declared whole signals until cast and literal sizing semantics are qualified.</summary>
+    private static Signal ComparisonReference(JsonElement value, IReadOnlyList<Signal> signals)
+    {
+        Fields(value, "kind", "name");
+        if (Text(value, "kind") != "ref") throw new InvalidDataException("Stage A comparisons require whole signal references.");
+        return signals.SingleOrDefault(candidate => candidate.Name == Text(value, "name"))
+            ?? throw new InvalidDataException("Stage A comparison references an unknown signal.");
     }
 
     private static Signal ParseSignal(JsonElement signal)

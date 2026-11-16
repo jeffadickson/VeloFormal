@@ -82,9 +82,11 @@ The adapter accepts exactly one synchronous clocked design:
   `shr`, and `ashr`. All operands must match the destination width and declared
   signedness; signed `shr` is lowered as an explicit logical zero-fill shift.
   A condition-only `not` is supported for the source-produced active-low reset
-  form. Casts, comparisons, other unary operators, and general conditionals
-  remain rejected until a source-produced fixture and paired external evidence
-  qualify their exact SystemVerilog sizing semantics.
+  form. Equality is supported only between two whole signal references with
+  identical width and signedness. Casts, other comparisons, other unary
+  operators, literals in comparisons, and general conditionals remain rejected
+  until source-produced fixtures and paired external evidence qualify their
+  exact SystemVerilog sizing semantics.
 
 Reset and initialization are not inferred. A reset branch is ordinary logic
 until the adapter has an explicit reset contract. `initialization` is rejected
