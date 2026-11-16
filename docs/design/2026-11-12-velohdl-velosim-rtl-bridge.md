@@ -70,7 +70,8 @@ The adapter accepts exactly one synchronous clocked design:
   interpreted as a single `posedge clock` process, matching the producer's
   normal one-process export;
 - a root `if` is accepted only for a scalar input condition (or its single
-  logical negation), or the qualified comparisons below. Its branches must be
+  logical negation), a conjunction of two such scalar inputs, or the qualified
+  comparisons below. Its branches must be
   nonblocking whole-word writes to the same state word, except that the
   producer's empty `else` block explicitly denotes holding that word. It lowers
   to an explicit next-state `ite`, preserving frame-snapshot semantics;
@@ -83,7 +84,8 @@ The adapter accepts exactly one synchronous clocked design:
   `shr`, and `ashr`. All operands must match the destination width and declared
   signedness; signed `shr` is lowered as an explicit logical zero-fill shift.
   A condition-only `not` is supported for the source-produced active-low reset
-  form. Equality and less-than are supported only between two whole signal
+  form. Conjunction is supported only between two scalar unsigned input
+  conditions. Equality and less-than are supported only between two whole signal
   references with identical width and signedness; less-than retains signedness
   in the lowered VeloFormal expression. Casts, other comparisons, other unary
   operators, literals in comparisons, and general conditionals remain rejected
