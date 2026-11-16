@@ -306,6 +306,22 @@ test, `dotnet test tests/VeloFormal.Tests/VeloFormal.Tests.csproj -c Release
 tests. This is a full managed regression result; it does not rerun the external
 SBY matrix or turn bounded checks into proofs.
 
+## 2026-11-16 external revalidation
+
+The portable OSS CAD Suite was re-probed without changing the machine-wide
+`PATH`. Yosys `0.70+255` (`72b0054f0`), `yosys-smtbmc`, and SBY
+`v0.70-9-g79fc9ed` were available; Slang was unavailable. The probe evidence is
+`artifacts/yosys-probe/20261116-001007-7659304/toolchain.json`.
+
+`yosys-stage1-matrix` then ran all five currently paired SBY fixtures and each
+returned its expected bounded verdict: four expected `FAIL` counterexample
+fixtures and one expected `PASS` signed-comparison fixture. The individual
+execution records are under `artifacts/yosys-stage1/20261116-001013-0724753/`
+through `artifacts/yosys-stage1/20261116-001017-0504973/`. This revalidates the
+existing narrowly paired Stage-1 fixtures only; it does not qualify the direct
+`velosim.rtl.v1` bridge additions, prove arbitrary RTL equivalence, or provide
+Slang frontend evidence.
+
 ## Differential limitation
 
 Before the pinned external run above, commands `yosys`, `yosys-smtbmc`, `sby`,
