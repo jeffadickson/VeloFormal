@@ -149,6 +149,18 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersParallelConditionalProcessesFromOneClockSnapshot()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"enable","width":1,"direction":"input","two_state":true},{"name":"data","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true},{"name":"r","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"parallel","items":[{"kind":"if","condition":{"kind":"ref","name":"enable"},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"data"}},"else":{"kind":"block","items":[]}},{"kind":"if","condition":{"kind":"ref","name":"enable"},"then":{"kind":"nba","target":{"kind":"ref","name":"r"},"value":{"kind":"ref","name":"q"}},"else":{"kind":"block","items":[]}}]}}
+            """;
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create("module parallel_enable;", "VeloSim", "fixture", rtl), "parallel_enable");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(enable, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+        Assert.Equal("ite(enable, q, r)", lowered.RootElement.GetProperty("next").GetProperty("r").GetString());
+    }
+
+    [Fact]
     public void LowersProducerEmptyElseBlockAsImplicitStateHold()
     {
         const string rtl = """

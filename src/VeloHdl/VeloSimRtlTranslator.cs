@@ -93,13 +93,17 @@ public static class VeloSimRtlTranslator
                 throw new InvalidDataException("Stage A block state destinations must be unique and bounded.");
             return flattened;
         }
-        if (kind == "nba") updates = [body];
-        else if (kind == "parallel")
+        if (kind == "parallel")
         {
             Fields(body, "kind", "items");
-            updates = body.GetProperty("items").EnumerateArray().ToArray();
-            if (updates.Length is < 1 or > 256) throw new InvalidDataException("Stage A parallel body must contain one through 256 updates.");
+            var items = body.GetProperty("items").EnumerateArray().ToArray();
+            if (items.Length is < 1 or > 256) throw new InvalidDataException("Stage A parallel body must contain one through 256 statements.");
+            var flattened = items.SelectMany(item => Assignments(item, signals, clock)).ToArray();
+            if (flattened.Length is < 1 or > 256 || flattened.Select(static assignment => assignment.Signal.Name).Distinct(StringComparer.Ordinal).Count() != flattened.Length)
+                throw new InvalidDataException("Stage A parallel state destinations must be unique and bounded.");
+            return flattened;
         }
+        if (kind == "nba") updates = [body];
         else throw new InvalidDataException("Stage A requires an implicit-clock nonblocking body.");
 
         var result = new List<Assignment>(updates.Length);
