@@ -97,6 +97,15 @@ Reset and initialization are not inferred. A reset branch is ordinary logic
 until the adapter has an explicit reset contract. `initialization` is rejected
 in the first increment rather than becoming a guessed time-zero state.
 
+## Next semantic frontiers
+
+The highest-impact unimplemented producer forms remain partial/selected writes,
+memories and their read/write timing, nonempty combinational logic, and explicit
+initial-state semantics. Each changes the transition relation materially and
+must be introduced through a source-produced fixture plus paired external
+evidence; none may be approximated by silently accepting the current empty-only
+fields.
+
 ## Semantic mapping
 
 Each accepted process is evaluated over frame *t*. All nonblocking updates
