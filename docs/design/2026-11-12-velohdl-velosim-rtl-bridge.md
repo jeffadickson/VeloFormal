@@ -74,7 +74,8 @@ The adapter accepts exactly one synchronous clocked design:
   comparisons below. Its branches must be
   nonblocking whole-word writes to the same state word, except that the
   producer's empty `else` block explicitly denotes holding that word. It lowers
-  to an explicit next-state `ite`, preserving frame-snapshot semantics;
+  to an explicit next-state `ite`; a nested `else if` for the same state word
+  is lowered as a priority-nested `ite`, preserving frame-snapshot semantics;
 - each formal state word has one writer; a process may use blocking local
   temporaries only after their precise semantics are specified in a later
   increment; Stage A initially accepts nonblocking assignments to whole signal
