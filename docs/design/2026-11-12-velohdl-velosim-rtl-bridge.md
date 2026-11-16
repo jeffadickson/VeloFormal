@@ -106,6 +106,13 @@ must be introduced through a source-produced fixture plus paired external
 evidence; none may be approximated by silently accepting the current empty-only
 fields.
 
+The first real memory probe emitted a bounded two-state declaration
+`{name,width,depth,two_state}`, indexed NBA writes, and indexed read expressions.
+It placed a write and read of the same address in one clocked block, so the
+required read-during-write behavior must be qualified before a memory is
+lowered. Stage A therefore continues to reject nonempty `memories` rather than
+guessing old-data, new-data, or implementation-defined behavior.
+
 ## Semantic mapping
 
 Each accepted process is evaluated over frame *t*. All nonblocking updates
