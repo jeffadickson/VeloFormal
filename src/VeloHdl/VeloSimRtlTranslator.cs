@@ -183,8 +183,6 @@ public static class VeloSimRtlTranslator
             var right = ComparisonReference(args[1], signals);
             if (left.Width != right.Width || left.Signed != right.Signed)
                 throw new InvalidDataException("Stage A equality requires matching operand width and signedness.");
-            if (kind == "lt" && left.Signed)
-                throw new InvalidDataException("Stage A less-than currently requires unsigned operands.");
             return left.Name + (kind == "eq" ? " == " : " < ") + right.Name;
         }
         throw new InvalidDataException("Unsupported Stage A condition.");
