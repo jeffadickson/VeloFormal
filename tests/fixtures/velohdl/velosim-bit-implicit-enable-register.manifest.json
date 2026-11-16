@@ -1,0 +1,12 @@
+{
+  "format": "velohdl.velosim-producer-manifest.v1",
+  "velosim_repository": "https://github.com/jeffadickson/VeloSim.git",
+  "velosim_revision": "6871c7cdbff39c0ebec730df4fa8e601cedbd8cd",
+  "producer_tree_clean": false,
+  "unrelated_dirty_paths": ["docs/superpowers/plans/2026-11-15-code-generation-architecture.md", "docs/superpowers/plans/2026-11-15-code-generation-design.md", "docs/superpowers/plans/2026-11-15-code-generation-experiments.md", "requirements/code-generation.sdoc"],
+  "source": { "path": "tests/fixtures/velohdl/velosim-bit-implicit-enable-register.sv", "decoded_utf8_sha256": "1df0eb88ae709807dbd5d89b5f96435f471f7f3b43f37ac54743a40bad478dbe" },
+  "structural_rtl": { "format": "velosim.rtl.v1", "path": "tests/fixtures/velohdl/velosim-bit-implicit-enable-register.rtl.json", "decoded_utf8_sha256": "73392698dfbfa353ce121504a0a7332ccf13fb864fbb4426ac092e2d121c0fe8" },
+  "producer": { "command": "velosim-uhdm-rtl <surelog.uhdm> <design.rtl.json> velosim_bit_implicit_enable_register", "exporter_sha256": "c70b9b5e72ded1b79d8354acf05f0f2f124d8ea11cf838960a6092c3f7f9b6c2", "host": "WSL2", "generated_utc": "2026-11-15" },
+  "formal_subset": "VeloHdl.VeloSimRtlTranslator/1: two-state synchronous implicit-enable hold",
+  "qualification": "bridge-fixture only; not a Yosys/SymbiYosys equivalence claim"
+}

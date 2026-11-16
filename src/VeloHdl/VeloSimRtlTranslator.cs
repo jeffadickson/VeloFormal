@@ -59,7 +59,7 @@ public static class VeloSimRtlTranslator
             {
                 string whenTrue = Expression(assignment.Value, signals, assignment.Signal.Width, assignment.Signal.Signed);
                 string value = assignment.Condition is null ? whenTrue
-                    : $"ite({assignment.Condition}, {whenTrue}, {Expression(assignment.ElseValue!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed)})";
+                    : $"ite({assignment.Condition}, {whenTrue}, {(assignment.HoldsState ? assignment.Signal.Name : Expression(assignment.ElseValue!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed))})";
                 return $"{JsonSerializer.Serialize(assignment.Signal.Name)}:{JsonSerializer.Serialize(value)}";
             }));
             string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{next}}}}}";
@@ -75,7 +75,7 @@ public static class VeloSimRtlTranslator
     }
 
     private sealed record Signal(string Name, int Width, string Direction, bool Signed);
-    private sealed record Assignment(Signal Signal, JsonElement Value, string? Condition = null, JsonElement? ElseValue = null);
+    private sealed record Assignment(Signal Signal, JsonElement Value, string? Condition = null, JsonElement? ElseValue = null, bool HoldsState = false);
 
     /// <summary>Collects disjoint nonblocking updates evaluated from the same source frame.</summary>
     private static Assignment[] Assignments(JsonElement body, IReadOnlyList<Signal> signals, string clock)
@@ -120,15 +120,27 @@ public static class VeloSimRtlTranslator
         return [.. result];
     }
 
-    /// <summary>Lowers a complete two-branch nonblocking assignment into an explicit formal mux.</summary>
+    /// <summary>Lowers a complete assignment or the producer's empty else block into an explicit formal mux.</summary>
     private static Assignment ConditionalAssignment(JsonElement statement, IReadOnlyList<Signal> signals, string clock)
     {
         Fields(statement, "kind", "condition", "then", "else");
         var whenTrue = SingleAssignment(statement.GetProperty("then"), signals, clock);
-        var whenFalse = SingleAssignment(statement.GetProperty("else"), signals, clock);
+        var otherwise = statement.GetProperty("else");
+        if (IsEmptyBlock(otherwise))
+            return new(whenTrue.Signal, whenTrue.Value, BooleanCondition(statement.GetProperty("condition"), signals), HoldsState: true);
+        var whenFalse = SingleAssignment(otherwise, signals, clock);
         if (whenTrue.Signal.Name != whenFalse.Signal.Name)
             throw new InvalidDataException("Stage A if branches must update the same state word.");
         return new(whenTrue.Signal, whenTrue.Value, BooleanCondition(statement.GetProperty("condition"), signals), whenFalse.Value);
+    }
+
+    /// <summary>Recognizes the VeloSim encoding for an omitted procedural branch, not a general empty statement.</summary>
+    private static bool IsEmptyBlock(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() != "block")
+            return false;
+        Fields(value, "kind", "items");
+        return value.GetProperty("items").ValueKind == JsonValueKind.Array && value.GetProperty("items").GetArrayLength() == 0;
     }
 
     private static Assignment SingleAssignment(JsonElement update, IReadOnlyList<Signal> signals, string clock)

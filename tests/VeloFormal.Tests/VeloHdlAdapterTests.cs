@@ -13,6 +13,20 @@ namespace VeloFormal.Tests;
 public sealed class VeloHdlAdapterTests
 {
     [Fact]
+    public void ConsumesPinnedVeloSimProducedImplicitEnableArtifact()
+    {
+        string directory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
+        string source = File.ReadAllText(Path.Combine(directory, "velosim-bit-implicit-enable-register.sv"));
+        string rtl = File.ReadAllText(Path.Combine(directory, "velosim-bit-implicit-enable-register.rtl.json"));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "velosim-bit-implicit-enable-register.manifest.json")));
+        Assert.Equal(StructuralProvenance.CalculateSha256(source), manifest.RootElement.GetProperty("source").GetProperty("decoded_utf8_sha256").GetString());
+        Assert.Equal(StructuralProvenance.CalculateSha256(rtl), manifest.RootElement.GetProperty("structural_rtl").GetProperty("decoded_utf8_sha256").GetString());
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create(source, "VeloSim", manifest.RootElement.GetProperty("velosim_revision").GetString()!, rtl), "velosim_bit_implicit_enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(enable, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void ConsumesPinnedVeloSimProducedMultiRegisterBlockArtifact()
     {
         string fixtureDirectory = Path.Combine(AppContext.BaseDirectory, "fixtures", "velohdl");
@@ -90,6 +104,18 @@ public sealed class VeloHdlAdapterTests
         using var lowered = JsonDocument.Parse(design.ModelJson());
         Assert.Equal("data", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
         Assert.Equal("q", lowered.RootElement.GetProperty("next").GetProperty("r").GetString());
+    }
+
+    [Fact]
+    public void LowersProducerEmptyElseBlockAsImplicitStateHold()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"enable","width":1,"direction":"input","two_state":true},{"name":"data","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"if","condition":{"kind":"ref","name":"enable"},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"data"}},"else":{"kind":"block","items":[]}}}
+            """;
+        var provenance = StructuralProvenance.Create("module implicit_enable_register;", "VeloSim", "fixture", rtl);
+        var design = VeloSimRtlTranslator.Translate(rtl, provenance, "implicit_enable_register");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(enable, data, q)", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
     }
 
     [Fact]
