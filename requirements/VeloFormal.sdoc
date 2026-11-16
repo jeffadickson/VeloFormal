@@ -85,6 +85,24 @@ RELATIONS:
 - TYPE: File
   VALUE: tests/VeloFormal.Tests/VeloHdlAdapterTests.cs
 
+[REQUIREMENT]
+UID: VF-RTL-003
+STATUS: Draft
+TITLE: Preserve qualified bounded memory semantics
+STATEMENT: Before VeloFormal accepts VeloSim memory artifacts, it shall represent bounded array state, indexed reads, indexed writes, and declared read-during-write semantics through its transition model, solver translation, counterexample rendering, and differential verification.
+RATIONALE: Memory timing and aliasing materially affect formal results and cannot be inferred from scalar next-state semantics.
+RELATIONS:
+- TYPE: File
+  VALUE: src/VeloFormal/Language/TransitionModel.cs
+- TYPE: File
+  VALUE: src/VeloFormal/Solving/Z3Translation.cs
+- TYPE: File
+  VALUE: src/VeloHdl/VeloSimRtlTranslator.cs
+- TYPE: File
+  VALUE: tests/fixtures/velohdl/velosim-bit-memory-read-write.sv
+- TYPE: File
+  VALUE: docs/design/2026-11-12-velohdl-velosim-rtl-bridge.md
+
 [[/SECTION]]
 
 [[SECTION]]
