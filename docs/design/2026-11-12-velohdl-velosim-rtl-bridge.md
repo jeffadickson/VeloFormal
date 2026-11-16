@@ -113,6 +113,12 @@ required read-during-write behavior must be qualified before a memory is
 lowered. Stage A therefore continues to reject nonempty `memories` rather than
 guessing old-data, new-data, or implementation-defined behavior.
 
+The current transition-model grammar and its Z3 translator have no array sort,
+`select`, or `store` representation. A future bounded-memory slice must first
+extend both layers and verify array-state framing, address-width bounds,
+read-during-write behavior, and counterexample rendering; accepting the
+producer field ahead of that work would be unsound.
+
 ## Semantic mapping
 
 Each accepted process is evaluated over frame *t*. All nonblocking updates
