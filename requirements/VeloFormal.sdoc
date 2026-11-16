@@ -97,6 +97,8 @@ RELATIONS:
 - TYPE: File
   VALUE: src/VeloFormal/Solving/Z3Translation.cs
 - TYPE: File
+  VALUE: src/VeloFormal/Solving/BoundedChecker.cs
+- TYPE: File
   VALUE: src/VeloHdl/VeloSimRtlTranslator.cs
 - TYPE: File
   VALUE: tests/fixtures/velohdl/velosim-bit-memory-read-write.sv
