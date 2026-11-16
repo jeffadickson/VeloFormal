@@ -184,6 +184,17 @@ public sealed class VeloHdlAdapterTests
     }
 
     [Fact]
+    public void LowersNestedConditionalAsPriorityMux()
+    {
+        const string rtl = """
+            {"format":"velosim.rtl.v1","signals":[{"name":"clk","width":1,"direction":"input","two_state":true},{"name":"first","width":1,"direction":"input","two_state":true},{"name":"second","width":1,"direction":"input","two_state":true},{"name":"a","width":8,"direction":"input","two_state":true},{"name":"b","width":8,"direction":"input","two_state":true},{"name":"q","width":8,"direction":"output","two_state":true}],"memories":[],"continuous":[],"combinational":[],"clock":"clk","initialization":{"kind":"block","items":[]},"body":{"kind":"if","condition":{"kind":"ref","name":"first"},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"a"}},"else":{"kind":"if","condition":{"kind":"ref","name":"second"},"then":{"kind":"nba","target":{"kind":"ref","name":"q"},"value":{"kind":"ref","name":"b"}},"else":{"kind":"block","items":[]}}}}
+            """;
+        var design = VeloSimRtlTranslator.Translate(rtl, StructuralProvenance.Create("module priority_mux;", "VeloSim", "fixture", rtl), "priority_mux");
+        using var lowered = JsonDocument.Parse(design.ModelJson());
+        Assert.Equal("ite(first, a, ite(second, b, q))", lowered.RootElement.GetProperty("next").GetProperty("q").GetString());
+    }
+
+    [Fact]
     public void LowersSameWidthUnsignedEqualityCondition()
     {
         const string rtl = """

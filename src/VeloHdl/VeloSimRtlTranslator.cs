@@ -57,9 +57,7 @@ public static class VeloSimRtlTranslator
             }));
             string next = string.Join(',', assignments.Select(assignment =>
             {
-                string whenTrue = Expression(assignment.Value, signals, assignment.Signal.Width, assignment.Signal.Signed);
-                string value = assignment.Condition is null ? whenTrue
-                    : $"ite({assignment.Condition}, {whenTrue}, {(assignment.HoldsState ? assignment.Signal.Name : Expression(assignment.ElseValue!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed))})";
+                string value = assignment.LoweredValue ?? Expression(assignment.Value!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed);
                 return $"{JsonSerializer.Serialize(assignment.Signal.Name)}:{JsonSerializer.Serialize(value)}";
             }));
             string model = $"{{\"module\":{JsonSerializer.Serialize(module)},\"clock\":{JsonSerializer.Serialize(clock)},\"signals\":[{modelSignals}],\"init\":\"true\",\"next\":{{{next}}}}}";
@@ -75,7 +73,8 @@ public static class VeloSimRtlTranslator
     }
 
     private sealed record Signal(string Name, int Width, string Direction, bool Signed);
-    private sealed record Assignment(Signal Signal, JsonElement Value, string? Condition = null, JsonElement? ElseValue = null, bool HoldsState = false);
+    /// <summary>Represents either a direct NBA value or a type-checked composed next-state expression.</summary>
+    private sealed record Assignment(Signal Signal, JsonElement? Value, string? LoweredValue = null);
 
     /// <summary>Collects disjoint nonblocking updates evaluated from the same source frame.</summary>
     private static Assignment[] Assignments(JsonElement body, IReadOnlyList<Signal> signals, string clock)
@@ -130,13 +129,25 @@ public static class VeloSimRtlTranslator
         Fields(statement, "kind", "condition", "then", "else");
         var whenTrue = SingleAssignment(statement.GetProperty("then"), signals, clock);
         var otherwise = statement.GetProperty("else");
+        string condition = BooleanCondition(statement.GetProperty("condition"), signals);
+        string trueValue = AssignmentValue(whenTrue, signals);
         if (IsEmptyBlock(otherwise))
-            return new(whenTrue.Signal, whenTrue.Value, BooleanCondition(statement.GetProperty("condition"), signals), HoldsState: true);
+            return new(whenTrue.Signal, null, $"ite({condition}, {trueValue}, {whenTrue.Signal.Name})");
+        if (Text(otherwise, "kind") == "if")
+        {
+            var whenFalseConditional = ConditionalAssignment(otherwise, signals, clock);
+            if (whenTrue.Signal.Name != whenFalseConditional.Signal.Name)
+                throw new InvalidDataException("Stage A if branches must update the same state word.");
+            return new(whenTrue.Signal, null, $"ite({condition}, {trueValue}, {AssignmentValue(whenFalseConditional, signals)})");
+        }
         var whenFalse = SingleAssignment(otherwise, signals, clock);
         if (whenTrue.Signal.Name != whenFalse.Signal.Name)
             throw new InvalidDataException("Stage A if branches must update the same state word.");
-        return new(whenTrue.Signal, whenTrue.Value, BooleanCondition(statement.GetProperty("condition"), signals), whenFalse.Value);
+        return new(whenTrue.Signal, null, $"ite({condition}, {trueValue}, {AssignmentValue(whenFalse, signals)})");
     }
+
+    private static string AssignmentValue(Assignment assignment, IReadOnlyList<Signal> signals)
+        => assignment.LoweredValue ?? Expression(assignment.Value!.Value, signals, assignment.Signal.Width, assignment.Signal.Signed);
 
     /// <summary>Recognizes the VeloSim encoding for an omitted procedural branch, not a general empty statement.</summary>
     private static bool IsEmptyBlock(JsonElement value)
