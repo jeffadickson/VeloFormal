@@ -178,6 +178,7 @@ pub fn optimize(module: &mut Module) {
         ff.next = remap[ff.next.0];
         if let Some(ar) = &mut ff.async_reset {
             ar.cond = remap[ar.cond.0];
+            ar.reset_val = remap[ar.reset_val.0];
         }
     }
     for mw in &mut module.mem_writes {

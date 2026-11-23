@@ -1,5 +1,6 @@
 pub mod fmt;
 pub mod opt;
+pub mod passes;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -239,10 +240,22 @@ pub struct ExprNode {
     pub kind: ExprKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClockEdge {
+    PosEdge,
+    NegEdge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClockSpec {
+    pub signal: SignalId,
+    pub edge: ClockEdge,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncReset {
     pub cond: ExprId,
-    pub reset_val: ConstBits,
+    pub reset_val: ExprId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +263,7 @@ pub struct Ff {
     pub signal: SignalId,
     pub next: ExprId,
     pub init: Option<ConstBits>,
+    pub clock: Option<ClockSpec>,
     pub async_reset: Option<AsyncReset>,
 }
 
@@ -265,6 +279,7 @@ pub struct MemWrite {
     pub addr: ExprId,
     pub data: ExprId,
     pub enable: ExprId,
+    pub clock: Option<ClockSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +287,10 @@ pub enum PropertyKind {
     Assert,
     Assume,
     Cover,
+    /// Liveness property (`assert (s_eventually cond)`): must hold infinitely often on fair paths.
+    Live,
+    /// Fairness constraint (`assume (s_eventually cond)`): restricts liveness loops to visit `cond`.
+    Fair,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,6 +7,8 @@ use vf_smt::solver::{SatResult, SmtSolver, TraceFrame};
 pub struct CoverConfig {
     pub depth: usize,
     pub solver: String,
+    /// Append N extra cycles after a cover hit in the witness trace (SymbiYosys `append N`).
+    pub append: usize,
 }
 
 impl Default for CoverConfig {
@@ -14,6 +16,7 @@ impl Default for CoverConfig {
         Self {
             depth: 20,
             solver: "z3".to_string(),
+            append: 0,
         }
     }
 }
@@ -63,7 +66,18 @@ pub fn run_cover(m: &Module, cfg: &CoverConfig) -> Result<Vec<CoverResult>> {
             solver.send(&defs)?;
             solver.send(&format!("(assert {hit})\n"))?;
             if solver.check_sat()? == SatResult::Sat {
-                let trace = solver.extract_trace(m, t + 1)?;
+                let mut total_steps = t + 1;
+                if cfg.append > 0 {
+                    for extra in 1..=cfg.append {
+                        let nt = t + extra;
+                        solver.send(&smt2::encode_step(m, nt, false, Some(nt - 1)))?;
+                        solver.send(&smt2::encode_assumes(m, nt))?;
+                    }
+                    if solver.check_sat()? == SatResult::Sat {
+                        total_steps = t + 1 + cfg.append;
+                    }
+                }
+                let trace = solver.extract_trace(m, total_steps)?;
                 results[slot].reached = Some((t, trace));
             }
             solver.pop()?;

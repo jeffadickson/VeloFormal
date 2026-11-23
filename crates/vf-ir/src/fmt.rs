@@ -46,17 +46,17 @@ pub fn dump_module(m: &Module) -> String {
             None => String::new(),
         };
         let arst = match &ff.async_reset {
-            Some(r) => format!(
-                " arst({}, {}'b{})",
-                fmt_expr(m, r.cond),
-                r.reset_val.width,
-                r.reset_val.bits
-            ),
+            Some(r) => format!(" arst({}, {})", fmt_expr(m, r.cond), fmt_expr(m, r.reset_val)),
+            None => String::new(),
+        };
+        let clk = match &ff.clock {
+            Some(c) => format!(" @({:?} \\{})", c.edge, m.signal(c.signal).name),
             None => String::new(),
         };
         let _ = writeln!(
             out,
-            "  dff \\{} <= {}{init}{arst}",
+            "  dff{} \\{} <= {}{init}{arst}",
+            clk,
             m.signal(ff.signal).name,
             fmt_expr(m, ff.next)
         );
@@ -78,6 +78,8 @@ pub fn dump_module(m: &Module) -> String {
             PropertyKind::Assert => "assert",
             PropertyKind::Assume => "assume",
             PropertyKind::Cover => "cover",
+            PropertyKind::Live => "live",
+            PropertyKind::Fair => "fair",
         };
         let _ = writeln!(
             out,

@@ -16,6 +16,8 @@ pub struct SignalDecl {
     pub signed: bool,
     pub direction: String,
     pub init: Option<Expr>,
+    #[serde(default)]
+    pub attrs: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,7 +56,7 @@ pub enum Timing {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Stmt {
     Empty,
@@ -63,7 +65,7 @@ pub enum Stmt {
         items: Vec<Stmt>,
     },
     Timed {
-        timing: Timing,
+        timing: Box<TimingJson>,
         body: Box<Stmt>,
     },
     Assign {
@@ -84,6 +86,8 @@ pub enum Stmt {
         else_branch: Option<Box<Stmt>>,
     },
     Case {
+        #[serde(default = "default_case_kind")]
+        case_kind: String,
         expr: Expr,
         items: Vec<CaseItem>,
         default: Option<Box<Stmt>>,
@@ -103,6 +107,18 @@ pub enum Stmt {
     ForLoop {
         #[serde(default)]
         loc: String,
+        loop_var: Option<String>,
+        init: Option<Expr>,
+        stop: Option<Expr>,
+        step: Option<Expr>,
+        body: Option<Box<Stmt>>,
+    },
+    RepeatLoop {
+        count: u64,
+        body: Box<Stmt>,
+    },
+    Return {
+        expr: Option<Expr>,
     },
     Unsupported {
         #[serde(default)]
@@ -110,20 +126,46 @@ pub enum Stmt {
     },
 }
 
-#[derive(Debug, Deserialize)]
+fn default_case_kind() -> String {
+    "normal".to_string()
+}
+
+/// Cloneable timing enum for `Stmt::Timed`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TimingJson {
+    Implicit,
+    SignalEvent {
+        edge: String,
+        expr: Expr,
+    },
+    EventList {
+        events: Vec<TimingJson>,
+    },
+    Other,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct CaseItem {
     pub exprs: Vec<Expr>,
     pub body: Stmt,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct SeqElement {
+    pub delay_min: u64,
+    pub delay_max: Option<u64>,
+    pub expr: AssertionExpr,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssertionExpr {
     Simple {
         expr: Expr,
     },
     Clocking {
-        clocking: Timing,
+        clocking: TimingJson,
         expr: Box<AssertionExpr>,
     },
     DisableIff {
@@ -139,6 +181,12 @@ pub enum AssertionExpr {
         left: Box<AssertionExpr>,
         right: Box<AssertionExpr>,
     },
+    SeqConcat {
+        elements: Vec<SeqElement>,
+    },
+    StrongWeak {
+        expr: Box<AssertionExpr>,
+    },
     Unsupported,
 }
 
@@ -149,6 +197,10 @@ pub enum Expr {
         width: u32,
         signed: bool,
         bits: String,
+        #[serde(default)]
+        mask_z: Option<String>,
+        #[serde(default)]
+        mask_xz: Option<String>,
     },
     Ref {
         name: String,
@@ -172,6 +224,12 @@ pub enum Expr {
         signed: bool,
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    AssignExpr {
+        width: u32,
+        signed: bool,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
     },
     Ternary {
         width: u32,
@@ -218,6 +276,20 @@ pub enum Expr {
         range_left: Option<i64>,
         range_right: Option<i64>,
     },
+    FieldSelect {
+        width: u32,
+        signed: bool,
+        bit_offset: u64,
+        value: Box<Expr>,
+    },
+    FuncCall {
+        name: String,
+        width: u32,
+        signed: bool,
+        params: Vec<String>,
+        args: Vec<Expr>,
+        body: Box<Stmt>,
+    },
     Call {
         name: String,
         width: u32,
@@ -238,12 +310,15 @@ impl Expr {
             | Expr::Conv { width, .. }
             | Expr::Unary { width, .. }
             | Expr::Binary { width, .. }
+            | Expr::AssignExpr { width, .. }
             | Expr::Ternary { width, .. }
             | Expr::Concat { width, .. }
             | Expr::Replicate { width, .. }
             | Expr::BitSelect { width, .. }
             | Expr::MemSelect { width, .. }
             | Expr::RangeSelect { width, .. }
+            | Expr::FieldSelect { width, .. }
+            | Expr::FuncCall { width, .. }
             | Expr::Call { width, .. }
             | Expr::Unsupported { width, .. } => *width,
         }
@@ -256,12 +331,15 @@ impl Expr {
             | Expr::Conv { signed, .. }
             | Expr::Unary { signed, .. }
             | Expr::Binary { signed, .. }
+            | Expr::AssignExpr { signed, .. }
             | Expr::Ternary { signed, .. }
             | Expr::Concat { signed, .. }
             | Expr::Replicate { signed, .. }
             | Expr::BitSelect { signed, .. }
             | Expr::MemSelect { signed, .. }
             | Expr::RangeSelect { signed, .. }
+            | Expr::FieldSelect { signed, .. }
+            | Expr::FuncCall { signed, .. }
             | Expr::Call { signed, .. }
             | Expr::Unsupported { signed, .. } => *signed,
         }

@@ -7,6 +7,10 @@ use vf_smt::solver::{SatResult, SmtSolver, TraceFrame};
 pub struct BmcConfig {
     pub depth: usize,
     pub solver: String,
+    /// Skip checking assertions during cycles `0..skip` (SymbiYosys `skip N`).
+    pub skip: usize,
+    /// Append N extra cycles after a failing assertion in the counterexample trace (SymbiYosys `append N`).
+    pub append: usize,
 }
 
 impl Default for BmcConfig {
@@ -14,6 +18,8 @@ impl Default for BmcConfig {
         Self {
             depth: 20,
             solver: "z3".to_string(),
+            skip: 0,
+            append: 0,
         }
     }
 }
@@ -52,11 +58,10 @@ pub fn run_bmc(m: &Module, cfg: &BmcConfig) -> Result<BmcOutcome> {
         solver.send(&smt2::encode_step(m, t, t == 0, t.checked_sub(1)))?;
         solver.send(&smt2::encode_assumes(m, t))?;
 
-        if assert_indices.is_empty() {
+        if assert_indices.is_empty() || t < cfg.skip {
             continue;
         }
 
-        // Check combined disjunction of all assertion failures at step `t`.
         solver.push()?;
         let mut clauses = Vec::with_capacity(assert_indices.len());
         for &idx in &assert_indices {
@@ -73,8 +78,19 @@ pub fn run_bmc(m: &Module, cfg: &BmcConfig) -> Result<BmcOutcome> {
 
         match solver.check_sat()? {
             SatResult::Sat => {
-                // Find the exact failing assertion.
-                let trace = solver.extract_trace(m, t + 1)?;
+                // Optionally append extra cycles after the failure (SymbiYosys `append N`).
+                let mut total_steps = t + 1;
+                if cfg.append > 0 {
+                    for extra in 1..=cfg.append {
+                        let nt = t + extra;
+                        solver.send(&smt2::encode_step(m, nt, false, Some(nt - 1)))?;
+                        solver.send(&smt2::encode_assumes(m, nt))?;
+                    }
+                    if solver.check_sat()? == SatResult::Sat {
+                        total_steps = t + 1 + cfg.append;
+                    }
+                }
+                let trace = solver.extract_trace(m, total_steps)?;
                 solver.pop()?;
 
                 let mut failed_name = m.properties[assert_indices[0]].name.clone();
@@ -104,7 +120,6 @@ pub fn run_bmc(m: &Module, cfg: &BmcConfig) -> Result<BmcOutcome> {
             }
             SatResult::Unsat => {
                 solver.pop()?;
-                // Verify assumptions are still satisfiable at this step.
                 if t == 0 {
                     match solver.check_sat()? {
                         SatResult::Unsat => return Ok(BmcOutcome::AssumptionsUnsat { step: t }),

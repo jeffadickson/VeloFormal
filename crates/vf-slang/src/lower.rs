@@ -1,9 +1,9 @@
-use crate::ast::{AssertionExpr, ElaboratedDesign, Expr, Stmt, Timing};
+use crate::ast::{AssertionExpr, ElaboratedDesign, Expr, Stmt, TimingJson};
 use anyhow::{anyhow, bail, Result};
 use std::collections::{HashMap, HashSet};
 use vf_ir::{
-    AsyncReset, CombAssign, ConstBits, ExprId, ExprKind, Ff, MemId, MemWrite, Module, Property,
-    PropertyKind, SignalId, SignalKind,
+    AsyncReset, ClockEdge, ClockSpec, CombAssign, ConstBits, ExprId, ExprKind, Ff, MemId, MemWrite,
+    Module, Property, PropertyKind, SignalId, SignalKind,
 };
 
 struct Lowerer {
@@ -13,14 +13,14 @@ struct Lowerer {
     past_counter: usize,
     any_counter: usize,
     prop_counter: usize,
-    /// Pending flip-flops created by `$past` / `$rose` / `$fell` / `$stable` / `$changed` / `$initstate` / `|=>`.
     aux_ffs: Vec<Ff>,
-    /// Initial values collected from variable declarations and `initial` blocks.
     inits: HashMap<SignalId, ConstBits>,
-    /// Signals driven by flip-flops (sequential).
-    seq_drivers: HashMap<SignalId, (ExprId, Option<AsyncReset>)>,
-    /// Signals driven combinationally.
+    seq_drivers: HashMap<SignalId, (ExprId, Option<ClockSpec>, Option<AsyncReset>)>,
     comb_drivers: HashMap<SignalId, ExprId>,
+    /// Local constant loop variables (e.g. `for (int i = 0; i < 8; i++)`).
+    const_locals: HashMap<String, i64>,
+    /// Local expression bindings (e.g. pure SV function parameters and return vars).
+    local_exprs: HashMap<String, ExprId>,
 }
 
 impl Lowerer {
@@ -36,18 +36,32 @@ impl Lowerer {
             inits: HashMap::new(),
             seq_drivers: HashMap::new(),
             comb_drivers: HashMap::new(),
+            const_locals: HashMap::new(),
+            local_exprs: HashMap::new(),
         }
     }
 
     fn lower_design(mut self, design: &ElaboratedDesign) -> Result<Module> {
-        // 1. Register all signals and memories.
+        // 1. Register all signals and memories (honoring Yosys formal attributes!).
         for s in &design.signals {
-            let kind = match s.direction.as_str() {
+            let mut kind = match s.direction.as_str() {
                 "input" => SignalKind::Input,
                 "output" => SignalKind::Output,
                 _ => SignalKind::Wire,
             };
+            let mut is_gclk = false;
+            for attr in &s.attrs {
+                match attr.as_str() {
+                    "anyseq" | "allseq" => kind = SignalKind::AnySeq,
+                    "anyconst" | "allconst" => kind = SignalKind::AnyConst,
+                    "gclk" => is_gclk = true,
+                    _ => {}
+                }
+            }
             let id = self.module.add_signal(&s.name, s.width, s.signed, kind);
+            if is_gclk {
+                self.module.signal_mut(id).is_clock = true;
+            }
             if let Some(init_expr) = &s.init {
                 if let Some(c) = self.try_eval_const(init_expr, s.width, s.signed) {
                     self.inits.insert(id, c);
@@ -67,7 +81,7 @@ impl Lowerer {
             self.mem_lo.insert(id, m.lo_index);
         }
 
-        // 2. Lower continuous assignments (`assign` and flattened sub-instance ports).
+        // 2. Lower continuous assignments (`assign`, net initializers, flattened port bindings).
         let empty_env = HashMap::new();
         for ca in &design.assigns {
             let rhs = self.lower_expr(&ca.rhs, &empty_env)?;
@@ -90,7 +104,7 @@ impl Lowerer {
             self.module.signal_mut(sig).init = Some(init.clone());
         }
 
-        for (sig, (next, async_reset)) in std::mem::take(&mut self.seq_drivers) {
+        for (sig, (next, clock, async_reset)) in std::mem::take(&mut self.seq_drivers) {
             let s = self.module.signal_mut(sig);
             if s.kind == SignalKind::Wire {
                 s.kind = SignalKind::Reg;
@@ -100,6 +114,7 @@ impl Lowerer {
                 signal: sig,
                 next,
                 init,
+                clock,
                 async_reset,
             });
         }
@@ -147,6 +162,28 @@ impl Lowerer {
                 }
                 Ok(())
             }
+            Expr::FieldSelect {
+                value,
+                bit_offset,
+                width,
+                ..
+            } => {
+                if let Expr::Ref { name, .. } = value.as_ref() {
+                    if let Some(sig) = self.module.find_signal(name) {
+                        let lo = *bit_offset as u32;
+                        let hi = lo + *width - 1;
+                        let base = self
+                            .comb_drivers
+                            .get(&sig)
+                            .copied()
+                            .unwrap_or_else(|| self.module.c_u64(self.module.signal(sig).width, 0));
+                        let updated = self.module.update_slice(base, hi, lo, rhs);
+                        self.comb_drivers.insert(sig, updated);
+                        return Ok(());
+                    }
+                }
+                bail!("unsupported packed struct field LHS in continuous assignment")
+            }
             Expr::BitSelect {
                 value,
                 selector,
@@ -156,13 +193,18 @@ impl Lowerer {
             } => {
                 if let Expr::Ref { name, .. } = value.as_ref() {
                     if let Some(sig) = self.module.find_signal(name) {
-                        if let Some(idx) = self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64()) {
-                            let bit = self.normalize_bit_index(idx as i64, *range_left, *range_right);
+                        if let Some(idx) =
+                            self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
+                        {
+                            let bit =
+                                self.normalize_bit_index(idx as i64, *range_left, *range_right);
                             let base = self
                                 .comb_drivers
                                 .get(&sig)
                                 .copied()
-                                .unwrap_or_else(|| self.module.c_u64(self.module.signal(sig).width, 0));
+                                .unwrap_or_else(|| {
+                                    self.module.c_u64(self.module.signal(sig).width, 0)
+                                });
                             let updated = self.module.update_slice(base, bit, bit, rhs);
                             self.comb_drivers.insert(sig, updated);
                             return Ok(());
@@ -209,21 +251,59 @@ impl Lowerer {
                 }
                 Ok(())
             }
+            Stmt::ForLoop {
+                loop_var,
+                init,
+                stop,
+                step,
+                body,
+                ..
+            } => {
+                if let (Some(var), Some(init_e), Some(stop_e), Some(step_e), Some(body_s)) =
+                    (loop_var, init, stop, step, body)
+                {
+                    let start = self
+                        .try_eval_i64(init_e)
+                        .ok_or_else(|| anyhow!("non-constant initial for-loop bound"))?;
+                    let prev = self.const_locals.insert(var.clone(), start);
+                    for _ in 0..4096 {
+                        if self.try_eval_i64(stop_e).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        self.lower_initial(body_s)?;
+                        let next_val = self.eval_loop_step(var, step_e)?;
+                        self.const_locals.insert(var.clone(), next_val);
+                    }
+                    if let Some(p) = prev {
+                        self.const_locals.insert(var.clone(), p);
+                    } else {
+                        self.const_locals.remove(var);
+                    }
+                }
+                Ok(())
+            }
             Stmt::Assign { lhs, rhs } | Stmt::Nba { lhs, rhs } => {
                 match lhs {
-                    Expr::Ref { name, width, signed } => {
+                    Expr::Ref {
+                        name,
+                        width,
+                        signed,
+                    } => {
                         if let Some(sig) = self.module.find_signal(name) {
                             if let Some(c) = self.try_eval_const(rhs, *width, *signed) {
                                 self.inits.insert(sig, c);
                             }
                         }
                     }
-                    Expr::MemSelect { value, selector, .. } => {
+                    Expr::MemSelect {
+                        value, selector, ..
+                    } => {
                         if let Expr::Ref { name, .. } = value.as_ref() {
                             if let Some(&mem_id) = self.module.mem_by_name.get(name) {
                                 let dw = self.module.memory(mem_id).data_width;
                                 if let (Some(addr), Some(val)) = (
-                                    self.try_eval_const(selector, 32, false).and_then(|c| c.to_u64()),
+                                    self.try_eval_const(selector, 32, false)
+                                        .and_then(|c| c.to_u64()),
                                     self.try_eval_const(rhs, dw, false),
                                 ) {
                                     let lo = self.mem_lo.get(&mem_id).copied().unwrap_or(0);
@@ -242,7 +322,6 @@ impl Lowerer {
                 cond,
                 loc,
             } => {
-                // `initial assume(...)` or `initial assert(...)` is guarded by `$initstate`.
                 let init_en = self.get_or_create_initstate();
                 let env = HashMap::new();
                 let c = self.lower_expr(cond, &env)?;
@@ -256,28 +335,28 @@ impl Lowerer {
 
     fn lower_always(&mut self, stmt: &Stmt) -> Result<()> {
         if let Stmt::Timed { timing, body } = stmt {
-            match timing {
-                Timing::Implicit => self.lower_comb_proc(body),
-                Timing::SignalEvent { edge, expr } => {
+            match timing.as_ref() {
+                TimingJson::Implicit => self.lower_comb_proc(body),
+                TimingJson::SignalEvent { edge, expr } => {
                     if edge == "none" {
                         self.lower_comb_proc(body)
                     } else {
-                        self.mark_clock_expr(expr);
-                        self.lower_clocked_body(body, None)
+                        let clk = self.extract_clock_spec(edge, expr);
+                        self.lower_clocked_body(body, clk, None)
                     }
                 }
-                Timing::EventList { events } => {
+                TimingJson::EventList { events } => {
                     let has_edge = events.iter().any(|e| {
-                        matches!(e, Timing::SignalEvent { edge, .. } if edge != "none")
+                        matches!(e, TimingJson::SignalEvent { edge, .. } if edge != "none")
                     });
                     if !has_edge {
                         self.lower_comb_proc(body)
                     } else {
-                        let async_rst = self.extract_async_reset_from_events(events);
-                        self.lower_clocked_body(body, async_rst)
+                        let (clk, async_rst) = self.extract_clock_and_async_reset(events);
+                        self.lower_clocked_body(body, clk, async_rst)
                     }
                 }
-                Timing::Other => self.lower_comb_proc(body),
+                TimingJson::Other => self.lower_comb_proc(body),
             }
         } else {
             self.lower_comb_proc(stmt)
@@ -286,34 +365,42 @@ impl Lowerer {
 
     fn lower_seq_proc(&mut self, stmt: &Stmt) -> Result<()> {
         if let Stmt::Timed { timing, body } = stmt {
-            let async_rst = match timing {
-                Timing::SignalEvent { expr, .. } => {
-                    self.mark_clock_expr(expr);
-                    None
-                }
-                Timing::EventList { events } => self.extract_async_reset_from_events(events),
-                _ => None,
+            let (clk, async_rst) = match timing.as_ref() {
+                TimingJson::SignalEvent { edge, expr } => (self.extract_clock_spec(edge, expr), None),
+                TimingJson::EventList { events } => self.extract_clock_and_async_reset(events),
+                _ => (None, None),
             };
-            self.lower_clocked_body(body, async_rst)
+            self.lower_clocked_body(body, clk, async_rst)
         } else {
-            self.lower_clocked_body(stmt, None)
+            self.lower_clocked_body(stmt, None, None)
         }
     }
 
-    fn mark_clock_expr(&mut self, expr: &Expr) {
+    fn extract_clock_spec(&mut self, edge: &str, expr: &Expr) -> Option<ClockSpec> {
         if let Expr::Ref { name, .. } = expr {
             if let Some(sig) = self.module.find_signal(name) {
                 self.module.signal_mut(sig).is_clock = true;
+                let e = if edge == "negedge" {
+                    ClockEdge::NegEdge
+                } else {
+                    ClockEdge::PosEdge
+                };
+                return Some(ClockSpec { signal: sig, edge: e });
             }
         }
+        None
     }
 
-    fn extract_async_reset_from_events(&mut self, events: &[Timing]) -> Option<(SignalId, bool)> {
+    fn extract_clock_and_async_reset(
+        &mut self,
+        events: &[TimingJson],
+    ) -> (Option<ClockSpec>, Option<(SignalId, bool)>) {
+        let mut clk = None;
         let mut async_rst = None;
         for (idx, ev) in events.iter().enumerate() {
-            if let Timing::SignalEvent { edge, expr } = ev {
+            if let TimingJson::SignalEvent { edge, expr } = ev {
                 if idx == 0 {
-                    self.mark_clock_expr(expr);
+                    clk = self.extract_clock_spec(edge, expr);
                 } else if let Expr::Ref { name, .. } = expr {
                     if let Some(sig) = self.module.find_signal(name) {
                         let active_low = edge == "negedge";
@@ -322,7 +409,7 @@ impl Lowerer {
                 }
             }
         }
-        async_rst
+        (clk, async_rst)
     }
 
     fn lower_comb_proc(&mut self, stmt: &Stmt) -> Result<()> {
@@ -330,7 +417,7 @@ impl Lowerer {
         let mut nba_writes: HashMap<SignalId, ExprId> = HashMap::new();
         let mut mem_writes: Vec<MemWrite> = Vec::new();
         let en = self.module.c_bool(true);
-        self.lower_stmt(stmt, en, &mut env, &mut nba_writes, &mut mem_writes, false)?;
+        self.lower_stmt(stmt, en, &mut env, &mut nba_writes, &mut mem_writes, false, None)?;
         for (sig, val) in env {
             self.comb_drivers.insert(sig, val);
         }
@@ -340,6 +427,7 @@ impl Lowerer {
     fn lower_clocked_body(
         &mut self,
         stmt: &Stmt,
+        clock: Option<ClockSpec>,
         async_rst: Option<(SignalId, bool)>,
     ) -> Result<()> {
         let mut blocking_env: HashMap<SignalId, ExprId> = HashMap::new();
@@ -353,23 +441,58 @@ impl Lowerer {
             &mut nba_writes,
             &mut mem_writes,
             true,
+            clock,
         )?;
 
-        // Async reset metadata (synchronous-semantics mux already lowered in `if (rst)` body,
-        // and we also record async_reset if recognized for BTOR2/SMT2 inspection).
-        let _ = async_rst;
+        // If the clocked block declared an async reset sensitivity (e.g. `posedge clk or negedge rst_n`),
+        // extract the reset condition + reset value from the top-level `if` when present so `async2sync`
+        // can model immediate asynchronous reset accurately.
+        let mut arst_vals: HashMap<SignalId, AsyncReset> = HashMap::new();
+        if let Some((rst_sig, active_low)) = async_rst {
+            let rst_e = self.module.sig_expr(rst_sig);
+            let rst_cond = if active_low {
+                self.module.logic_not(rst_e)
+            } else {
+                self.module.to_bool(rst_e)
+            };
+            if let Some(Stmt::If { then, .. }) = unwrap_single_stmt(stmt) {
+                let mut rst_env = HashMap::new();
+                let mut rst_nba = HashMap::new();
+                let mut dummy_mw = Vec::new();
+                let _ = self.lower_stmt(
+                    then,
+                    rst_cond,
+                    &mut rst_env,
+                    &mut rst_nba,
+                    &mut dummy_mw,
+                    true,
+                    clock,
+                );
+                for (sig, val) in rst_nba.into_iter().chain(rst_env) {
+                    arst_vals.insert(
+                        sig,
+                        AsyncReset {
+                            cond: rst_cond,
+                            reset_val: val,
+                        },
+                    );
+                }
+            }
+        }
 
-        // Blocking assignments inside clocked blocks that aren't purely temporary also update regs.
         for (sig, val) in nba_writes {
-            self.seq_drivers.insert(sig, (val, None));
+            let arst = arst_vals.remove(&sig);
+            self.seq_drivers.insert(sig, (val, clock, arst));
         }
         for (sig, val) in blocking_env {
-            self.seq_drivers.entry(sig).or_insert((val, None));
+            let arst = arst_vals.remove(&sig);
+            self.seq_drivers.entry(sig).or_insert((val, clock, arst));
         }
         self.module.mem_writes.extend(mem_writes);
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_stmt(
         &mut self,
         stmt: &Stmt,
@@ -378,25 +501,26 @@ impl Lowerer {
         nba: &mut HashMap<SignalId, ExprId>,
         mem_writes: &mut Vec<MemWrite>,
         is_clocked: bool,
+        clock: Option<ClockSpec>,
     ) -> Result<()> {
         match stmt {
             Stmt::Empty => Ok(()),
             Stmt::Block { items, .. } => {
                 for item in items {
-                    self.lower_stmt(item, guard, env, nba, mem_writes, is_clocked)?;
+                    self.lower_stmt(item, guard, env, nba, mem_writes, is_clocked, clock)?;
                 }
                 Ok(())
             }
             Stmt::Timed { body, .. } => {
-                self.lower_stmt(body, guard, env, nba, mem_writes, is_clocked)
+                self.lower_stmt(body, guard, env, nba, mem_writes, is_clocked, clock)
             }
             Stmt::Assign { lhs, rhs } => {
                 let val = self.lower_expr(rhs, env)?;
-                self.apply_write(lhs, val, guard, env, mem_writes, false)
+                self.apply_write(lhs, val, guard, env, mem_writes, false, clock)
             }
             Stmt::Nba { lhs, rhs } => {
                 let val = self.lower_expr(rhs, env)?;
-                self.apply_write(lhs, val, guard, nba, mem_writes, true)
+                self.apply_write(lhs, val, guard, nba, mem_writes, true, clock)
             }
             Stmt::If {
                 cond,
@@ -418,6 +542,7 @@ impl Lowerer {
                     &mut then_nba,
                     mem_writes,
                     is_clocked,
+                    clock,
                 )?;
 
                 let mut else_env = env.clone();
@@ -430,6 +555,7 @@ impl Lowerer {
                         &mut else_nba,
                         mem_writes,
                         is_clocked,
+                        clock,
                     )?;
                 }
 
@@ -438,6 +564,7 @@ impl Lowerer {
                 Ok(())
             }
             Stmt::Case {
+                case_kind,
                 expr,
                 items,
                 default,
@@ -445,19 +572,20 @@ impl Lowerer {
                 let sel = self.lower_expr(expr, env)?;
                 let sel_signed = expr.is_signed();
 
-                // Lower case as priority if-else chain from top to bottom (matching SV semantics).
                 let base_env = env.clone();
                 let base_nba = nba.clone();
 
-                let mut branch_results: Vec<(ExprId, HashMap<SignalId, ExprId>, HashMap<SignalId, ExprId>)> =
-                    Vec::new();
+                let mut branch_results: Vec<(
+                    ExprId,
+                    HashMap<SignalId, ExprId>,
+                    HashMap<SignalId, ExprId>,
+                )> = Vec::new();
                 let mut unmatched = guard;
 
                 for item in items {
                     let mut item_match = self.module.c_bool(false);
                     for e in &item.exprs {
-                        let ev = self.lower_expr(e, &base_env)?;
-                        let eq = self.module.eq(sel, ev, sel_signed);
+                        let eq = self.lower_case_match(case_kind, sel, sel_signed, e, &base_env)?;
                         item_match = self.module.logic_or(item_match, eq);
                     }
                     let branch_guard = self.module.logic_and(unmatched, item_match);
@@ -473,6 +601,7 @@ impl Lowerer {
                         &mut b_nba,
                         mem_writes,
                         is_clocked,
+                        clock,
                     )?;
                     branch_results.push((item_match, b_env, b_nba));
                 }
@@ -487,6 +616,7 @@ impl Lowerer {
                         &mut cur_nba,
                         mem_writes,
                         is_clocked,
+                        clock,
                     )?;
                 }
 
@@ -499,6 +629,49 @@ impl Lowerer {
 
                 *env = cur_env;
                 *nba = cur_nba;
+                Ok(())
+            }
+            Stmt::ForLoop {
+                loc,
+                loop_var,
+                init,
+                stop,
+                step,
+                body,
+            } => {
+                let (Some(var), Some(init_e), Some(stop_e), Some(step_e), Some(body_s)) =
+                    (loop_var, init, stop, step, body)
+                else {
+                    bail!("procedural for-loop at {loc} could not be statically unrolled");
+                };
+                let start = self
+                    .try_eval_i64(init_e)
+                    .ok_or_else(|| anyhow!("non-constant for-loop initializer at {loc}"))?;
+                let prev = self.const_locals.insert(var.clone(), start);
+                let mut iters = 0usize;
+                loop {
+                    if self.try_eval_i64(stop_e).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    iters += 1;
+                    if iters > 4096 {
+                        bail!("procedural for-loop at {loc} exceeded 4096-iteration unroll limit");
+                    }
+                    self.lower_stmt(body_s, guard, env, nba, mem_writes, is_clocked, clock)?;
+                    let next_val = self.eval_loop_step(var, step_e)?;
+                    self.const_locals.insert(var.clone(), next_val);
+                }
+                if let Some(p) = prev {
+                    self.const_locals.insert(var.clone(), p);
+                } else {
+                    self.const_locals.remove(var);
+                }
+                Ok(())
+            }
+            Stmt::RepeatLoop { count, body } => {
+                for _ in 0..(*count).min(4096) {
+                    self.lower_stmt(body, guard, env, nba, mem_writes, is_clocked, clock)?;
+                }
                 Ok(())
             }
             Stmt::ImmediateAssert {
@@ -519,14 +692,41 @@ impl Lowerer {
                 self.lower_concurrent_assert(assert_kind, prop, guard, env, loc)?;
                 Ok(())
             }
-            Stmt::ExprStmt { .. } => Ok(()),
-            Stmt::ForLoop { loc } => {
-                bail!("procedural for-loop at {loc} is not yet lowered (use generate-for or submit issue)")
+            Stmt::Return { expr } => {
+                if let Some(e) = expr {
+                    let v = self.lower_expr(e, env)?;
+                    self.local_exprs.insert("$return".to_string(), v);
+                }
+                Ok(())
             }
+            Stmt::ExprStmt { .. } => Ok(()),
             Stmt::Unsupported { loc } => {
                 bail!("unsupported SystemVerilog statement at {loc}")
             }
         }
+    }
+
+    fn lower_case_match(
+        &mut self,
+        case_kind: &str,
+        sel: ExprId,
+        sel_signed: bool,
+        pat: &Expr,
+        env: &HashMap<SignalId, ExprId>,
+    ) -> Result<ExprId> {
+        if case_kind == "casez" || case_kind == "casex" {
+            if let Some((bits, mask)) = extract_wildcard_const(pat, case_kind == "casex") {
+                let w = self.module.width(sel).max(bits.width);
+                let sel_w = self.module.resize(sel, w, sel_signed);
+                let val_c = self.module.c_bits(bits.resize_zext(w));
+                let mask_c = self.module.c_bits(mask.resize_zext(w));
+                let masked_sel = self.module.intern(w, ExprKind::And(sel_w, mask_c));
+                let masked_val = self.module.intern(w, ExprKind::And(val_c, mask_c));
+                return Ok(self.module.intern(1, ExprKind::Eq(masked_sel, masked_val)));
+            }
+        }
+        let ev = self.lower_expr(pat, env)?;
+        Ok(self.module.eq(sel, ev, sel_signed))
     }
 
     fn lower_concurrent_assert(
@@ -539,9 +739,12 @@ impl Lowerer {
     ) -> Result<()> {
         match prop {
             AssertionExpr::Clocking { clocking, expr } => {
-                if let Timing::SignalEvent { expr: clk, .. } = clocking {
-                    self.mark_clock_expr(clk);
+                if let TimingJson::SignalEvent { edge, expr: clk } = clocking {
+                    let _ = self.extract_clock_spec(edge, clk);
                 }
+                self.lower_concurrent_assert(assert_kind, expr, guard, env, loc)
+            }
+            AssertionExpr::StrongWeak { expr } => {
                 self.lower_concurrent_assert(assert_kind, expr, guard, env, loc)
             }
             AssertionExpr::DisableIff { cond, expr } => {
@@ -556,47 +759,86 @@ impl Lowerer {
                 self.add_property(assert_kind, c, guard, loc);
                 Ok(())
             }
-            AssertionExpr::Unary { op, expr } if op == "Not" => {
-                let inner = self.lower_assertion_bool(expr, env)?;
-                let negated = self.module.logic_not(inner);
-                self.add_property(assert_kind, negated, guard, loc);
-                Ok(())
-            }
-            AssertionExpr::Binary { op, left, right } => {
-                match op.as_str() {
-                    "OverlappedImplication" | "Implies" => {
-                        // `A |-> B` is `A => B` in the same cycle.
-                        let a = self.lower_assertion_bool(left, env)?;
-                        let b = self.lower_assertion_bool(right, env)?;
-                        let new_guard = self.module.logic_and(guard, a);
-                        self.add_property(assert_kind, b, new_guard, loc);
-                        Ok(())
-                    }
-                    "NonOverlappedImplication" => {
-                        // `A |=> B` means: if `guard && A` held in the previous cycle, `B` holds now!
-                        let a = self.lower_assertion_bool(left, env)?;
-                        let trig = self.module.logic_and(guard, a);
-                        let prev_trig = self.make_past_reg(trig, Some(ConstBits::zero(1)));
-                        let b = self.lower_assertion_bool(right, env)?;
-                        self.add_property(assert_kind, b, prev_trig, loc);
-                        Ok(())
-                    }
-                    "And" => {
-                        let a = self.lower_assertion_bool(left, env)?;
-                        let b = self.lower_assertion_bool(right, env)?;
-                        let both = self.module.logic_and(a, b);
-                        self.add_property(assert_kind, both, guard, loc);
-                        Ok(())
-                    }
-                    "Or" => {
-                        let a = self.lower_assertion_bool(left, env)?;
-                        let b = self.lower_assertion_bool(right, env)?;
-                        let either = self.module.logic_or(a, b);
-                        self.add_property(assert_kind, either, guard, loc);
-                        Ok(())
-                    }
-                    other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
+            AssertionExpr::Unary { op, expr } => match op.as_str() {
+                "Always" | "SAlways" => {
+                    self.lower_concurrent_assert(assert_kind, expr, guard, env, loc)
                 }
+                "Eventually" | "SEventually" => {
+                    let c = self.lower_assertion_bool(expr, env)?;
+                    let mapped_kind = match assert_kind {
+                        "assume" => "fair",
+                        _ => "live",
+                    };
+                    self.add_property(mapped_kind, c, guard, loc);
+                    Ok(())
+                }
+                "Not" => {
+                    let inner = self.lower_assertion_bool(expr, env)?;
+                    let negated = self.module.logic_not(inner);
+                    self.add_property(assert_kind, negated, guard, loc);
+                    Ok(())
+                }
+                other => bail!("unsupported SVA unary operator '{other}' at {loc}"),
+            },
+            AssertionExpr::Binary { op, left, right } => match op.as_str() {
+                "OverlappedImplication" | "Implies" => {
+                    let a = self.lower_assertion_bool(left, env)?;
+                    let new_guard = self.module.logic_and(guard, a);
+                    self.lower_concurrent_assert(assert_kind, right, new_guard, env, loc)
+                }
+                "NonOverlappedImplication" => {
+                    let a = self.lower_assertion_bool(left, env)?;
+                    let trig = self.module.logic_and(guard, a);
+                    let prev_trig = self.make_past_reg(trig, Some(ConstBits::zero(1)));
+                    self.lower_concurrent_assert(assert_kind, right, prev_trig, env, loc)
+                }
+                "And" => {
+                    let a = self.lower_assertion_bool(left, env)?;
+                    let b = self.lower_assertion_bool(right, env)?;
+                    let both = self.module.logic_and(a, b);
+                    self.add_property(assert_kind, both, guard, loc);
+                    Ok(())
+                }
+                "Or" => {
+                    let a = self.lower_assertion_bool(left, env)?;
+                    let b = self.lower_assertion_bool(right, env)?;
+                    let either = self.module.logic_or(a, b);
+                    self.add_property(assert_kind, either, guard, loc);
+                    Ok(())
+                }
+                other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
+            },
+            AssertionExpr::SeqConcat { elements } => {
+                // Lower sequence `##d0 e0 ##d1 e1 ...` (including leading `##2 ack` where element 0 has delay_min=2).
+                let mut cur_trig = guard;
+                for (i, el) in elements.iter().enumerate() {
+                    let d_min = el.delay_min as usize;
+                    let d_max = el.delay_max.unwrap_or(el.delay_min) as usize;
+                    if d_min > 0 || d_max > 0 {
+                        if d_min == d_max {
+                            for _ in 0..d_min {
+                                cur_trig = self.make_past_reg(cur_trig, Some(ConstBits::zero(1)));
+                            }
+                        } else {
+                            let mut shifted = cur_trig;
+                            let mut any = self.module.c_bool(false);
+                            for step in 1..=d_max {
+                                shifted = self.make_past_reg(shifted, Some(ConstBits::zero(1)));
+                                if step >= d_min {
+                                    any = self.module.logic_or(any, shifted);
+                                }
+                            }
+                            cur_trig = any;
+                        }
+                    }
+                    let cond = self.lower_assertion_bool(&el.expr, env)?;
+                    if i + 1 == elements.len() {
+                        self.add_property(assert_kind, cond, cur_trig, loc);
+                    } else {
+                        cur_trig = self.module.logic_and(cur_trig, cond);
+                    }
+                }
+                Ok(())
             }
             _ => bail!("unsupported concurrent assertion expression at {loc}"),
         }
@@ -612,6 +854,7 @@ impl Lowerer {
                 let c = self.lower_expr(expr, env)?;
                 Ok(self.module.to_bool(c))
             }
+            AssertionExpr::StrongWeak { expr } => self.lower_assertion_bool(expr, env),
             AssertionExpr::Unary { op, expr } if op == "Not" => {
                 let c = self.lower_assertion_bool(expr, env)?;
                 Ok(self.module.logic_not(c))
@@ -626,6 +869,20 @@ impl Lowerer {
                 let b = self.lower_assertion_bool(right, env)?;
                 Ok(self.module.logic_or(a, b))
             }
+            AssertionExpr::SeqConcat { elements } => {
+                // Sequence match indicator for antecedent `a ##1 b |-> c`
+                let mut matched = self.module.c_bool(true);
+                for (i, el) in elements.iter().enumerate() {
+                    if i > 0 {
+                        for _ in 0..el.delay_min {
+                            matched = self.make_past_reg(matched, Some(ConstBits::zero(1)));
+                        }
+                    }
+                    let c = self.lower_assertion_bool(&el.expr, env)?;
+                    matched = self.module.logic_and(matched, c);
+                }
+                Ok(matched)
+            }
             _ => bail!("nested temporal SVA expression not yet supported"),
         }
     }
@@ -634,6 +891,8 @@ impl Lowerer {
         let kind = match kind_str {
             "assume" => PropertyKind::Assume,
             "cover" => PropertyKind::Cover,
+            "live" => PropertyKind::Live,
+            "fair" => PropertyKind::Fair,
             _ => PropertyKind::Assert,
         };
         let idx = self.prop_counter;
@@ -663,11 +922,7 @@ impl Lowerer {
         then_map: &HashMap<SignalId, ExprId>,
         else_map: &HashMap<SignalId, ExprId>,
     ) {
-        let mut keys: Vec<SignalId> = then_map
-            .keys()
-            .chain(else_map.keys())
-            .copied()
-            .collect();
+        let mut keys: Vec<SignalId> = then_map.keys().chain(else_map.keys()).copied().collect();
         keys.sort_by_key(|k| k.0);
         keys.dedup();
 
@@ -687,6 +942,7 @@ impl Lowerer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_write(
         &mut self,
         lhs: &Expr,
@@ -695,9 +951,15 @@ impl Lowerer {
         target: &mut HashMap<SignalId, ExprId>,
         mem_writes: &mut Vec<MemWrite>,
         is_nba: bool,
+        clock: Option<ClockSpec>,
     ) -> Result<()> {
         match lhs {
             Expr::Ref { name, width, .. } => {
+                if self.local_exprs.contains_key(name) {
+                    let val = self.module.resize(rhs, *width, false);
+                    self.local_exprs.insert(name.clone(), val);
+                    return Ok(());
+                }
                 let sig = self
                     .module
                     .find_signal(name)
@@ -712,9 +974,30 @@ impl Lowerer {
                     let w = op.width();
                     offset -= w;
                     let slice = self.module.slice(rhs, offset + w - 1, offset);
-                    self.apply_write(op, slice, guard, target, mem_writes, is_nba)?;
+                    self.apply_write(op, slice, guard, target, mem_writes, is_nba, clock)?;
                 }
                 Ok(())
+            }
+            Expr::FieldSelect {
+                value,
+                bit_offset,
+                width,
+                ..
+            } => {
+                if let Expr::Ref { name, .. } = value.as_ref() {
+                    if let Some(sig) = self.module.find_signal(name) {
+                        let base = target
+                            .get(&sig)
+                            .copied()
+                            .unwrap_or_else(|| self.module.sig_expr(sig));
+                        let lo = *bit_offset as u32;
+                        let hi = lo + *width - 1;
+                        let updated = self.module.update_slice(base, hi, lo, rhs);
+                        target.insert(sig, updated);
+                        return Ok(());
+                    }
+                }
+                bail!("unsupported packed struct field assignment LHS")
             }
             Expr::BitSelect {
                 value,
@@ -729,13 +1012,15 @@ impl Lowerer {
                             .get(&sig)
                             .copied()
                             .unwrap_or_else(|| self.module.sig_expr(sig));
-                        if let Some(idx) = self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64()) {
-                            let bit = self.normalize_bit_index(idx as i64, *range_left, *range_right);
+                        if let Some(idx) =
+                            self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
+                        {
+                            let bit =
+                                self.normalize_bit_index(idx as i64, *range_left, *range_right);
                             let updated = self.module.update_slice(base, bit, bit, rhs);
                             target.insert(sig, updated);
                             return Ok(());
                         } else {
-                            // Dynamic bit select write: update bit via shift mask.
                             let w = self.module.signal(sig).width;
                             let sel_e = self.lower_expr(selector, target)?;
                             let sel_w = self.module.resize(sel_e, w, false);
@@ -794,6 +1079,7 @@ impl Lowerer {
                             addr,
                             data,
                             enable: guard,
+                            clock,
                         });
                         return Ok(());
                     }
@@ -804,7 +1090,12 @@ impl Lowerer {
         }
     }
 
-    fn normalize_bit_index(&self, idx: i64, range_left: Option<i64>, range_right: Option<i64>) -> u32 {
+    fn normalize_bit_index(
+        &self,
+        idx: i64,
+        range_left: Option<i64>,
+        range_right: Option<i64>,
+    ) -> u32 {
         match (range_left, range_right) {
             (Some(l), Some(r)) if l >= r => (idx - r) as u32,
             (Some(_l), Some(r)) => (r - idx) as u32,
@@ -826,6 +1117,7 @@ impl Lowerer {
             signal: sig,
             next: zero,
             init: Some(one),
+            clock: None,
             async_reset: None,
         });
         self.init_state_sig = Some(sig);
@@ -844,6 +1136,7 @@ impl Lowerer {
             signal: sig,
             next: expr,
             init,
+            clock: None,
             async_reset: None,
         });
         self.module.sig_expr(sig)
@@ -854,7 +1147,13 @@ impl Lowerer {
             Expr::Const { width, bits, .. } => {
                 Ok(self.module.c_bits(ConstBits::new(*width, bits.clone())))
             }
-            Expr::Ref { name, .. } => {
+            Expr::Ref { name, width, .. } => {
+                if let Some(&val) = self.const_locals.get(name) {
+                    return Ok(self.module.c_bits(ConstBits::from_i64(*width, val)));
+                }
+                if let Some(&val) = self.local_exprs.get(name) {
+                    return Ok(self.module.resize(val, *width, false));
+                }
                 let sig = self
                     .module
                     .find_signal(name)
@@ -1043,6 +1342,17 @@ impl Lowerer {
                 let parts = vec![inner; *count as usize];
                 Ok(self.module.concat(parts))
             }
+            Expr::FieldSelect {
+                width,
+                bit_offset,
+                value,
+                ..
+            } => {
+                let base = self.lower_expr(value, env)?;
+                let lo = *bit_offset as u32;
+                let hi = lo + *width - 1;
+                Ok(self.module.slice(base, hi, lo))
+            }
             Expr::BitSelect {
                 value,
                 selector,
@@ -1051,7 +1361,9 @@ impl Lowerer {
                 ..
             } => {
                 let base = self.lower_expr(value, env)?;
-                if let Some(idx) = self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64()) {
+                if let Some(idx) =
+                    self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
+                {
                     let bit = self.normalize_bit_index(idx as i64, *range_left, *range_right);
                     Ok(self.module.slice(base, bit, bit))
                 } else {
@@ -1072,7 +1384,9 @@ impl Lowerer {
                         let dw = mem.data_width;
                         let addr_raw = self.lower_expr(selector, env)?;
                         let addr = self.module.resize(addr_raw, aw, false);
-                        return Ok(self.module.intern(dw, ExprKind::MemRead { mem: mem_id, addr }));
+                        return Ok(self
+                            .module
+                            .intern(dw, ExprKind::MemRead { mem: mem_id, addr }));
                     }
                 }
                 bail!("unknown memory in MemSelect")
@@ -1116,12 +1430,48 @@ impl Lowerer {
                     _ => bail!("unsupported dynamic range select"),
                 }
             }
+            Expr::FuncCall {
+                name,
+                width,
+                signed,
+                params,
+                args,
+                body,
+            } => {
+                // Inline pure combinational SystemVerilog function call.
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_vals.push(self.lower_expr(a, env)?);
+                }
+                let saved_locals = std::mem::take(&mut self.local_exprs);
+                for (p, v) in params.iter().zip(arg_vals) {
+                    self.local_exprs.insert(p.clone(), v);
+                }
+                let zero = self.module.c_u64(*width, 0);
+                self.local_exprs.insert(name.clone(), zero);
+
+                let mut fn_env = env.clone();
+                let mut fn_nba = HashMap::new();
+                let mut fn_mw = Vec::new();
+                let en = self.module.c_bool(true);
+                self.lower_stmt(body, en, &mut fn_env, &mut fn_nba, &mut fn_mw, false, None)?;
+
+                let ret = self
+                    .local_exprs
+                    .get("$return")
+                    .or_else(|| self.local_exprs.get(name))
+                    .copied()
+                    .unwrap_or(zero);
+                self.local_exprs = saved_locals;
+                Ok(self.module.resize(ret, *width, *signed))
+            }
             Expr::Call {
                 name,
                 width,
                 signed,
                 args,
             } => self.lower_system_call(name, *width, *signed, args, env),
+            Expr::AssignExpr { rhs, .. } => self.lower_expr(rhs, env),
             Expr::Unsupported { .. } => bail!("unsupported SystemVerilog expression"),
         }
     }
@@ -1205,7 +1555,6 @@ impl Lowerer {
             "$onehot" => {
                 let v = self.lower_expr(&args[0], env)?;
                 let w = self.module.width(v);
-                // x != 0 && (x & (x - 1)) == 0
                 let zero = self.module.c_u64(w, 0);
                 let one = self.module.c_u64(w, 1);
                 let nonzero = self.module.intern(1, ExprKind::Ne(v, zero));
@@ -1223,7 +1572,83 @@ impl Lowerer {
                 let masked = self.module.intern(w, ExprKind::And(v, minus1));
                 Ok(self.module.intern(1, ExprKind::Eq(masked, zero)))
             }
+            "$countones" => {
+                let v = self.lower_expr(&args[0], env)?;
+                let vw = self.module.width(v);
+                let mut acc = self.module.c_u64(width, 0);
+                for bit in 0..vw {
+                    let b = self.module.slice(v, bit, bit);
+                    let bz = self.module.resize(b, width, false);
+                    acc = self.module.intern(width, ExprKind::Add(acc, bz));
+                }
+                Ok(acc)
+            }
             other => bail!("unsupported system function call '{other}'"),
+        }
+    }
+
+    fn eval_loop_step(&self, var: &str, step: &Expr) -> Result<i64> {
+        let cur = *self
+            .const_locals
+            .get(var)
+            .ok_or_else(|| anyhow!("missing loop var '{var}'"))?;
+        match step {
+            Expr::AssignExpr { rhs, .. } => self
+                .try_eval_i64(rhs)
+                .ok_or_else(|| anyhow!("non-constant for-loop step expression")),
+            Expr::Unary { op, .. } if op == "Postincrement" || op == "Preincrement" => Ok(cur + 1),
+            Expr::Unary { op, .. } if op == "Postdecrement" || op == "Predecrement" => Ok(cur - 1),
+            _ => self
+                .try_eval_i64(step)
+                .ok_or_else(|| anyhow!("unsupported for-loop step: {step:?}")),
+        }
+    }
+
+    fn try_eval_i64(&self, expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Const { width, signed, bits, .. } => {
+                let c = ConstBits::new(*width, bits.clone());
+                let raw = c.to_u64()?;
+                if *signed && *width < 64 && ((raw >> (*width - 1)) & 1) != 0 {
+                    let ext = !((1u64 << *width) - 1);
+                    Some((raw | ext) as i64)
+                } else {
+                    Some(raw as i64)
+                }
+            }
+            Expr::Ref { name, .. } => self.const_locals.get(name).copied(),
+            Expr::Conv { operand, .. } => self.try_eval_i64(operand),
+            Expr::Unary { op, operand, .. } => {
+                let v = self.try_eval_i64(operand)?;
+                match op.as_str() {
+                    "Plus" => Some(v),
+                    "Minus" => Some(-v),
+                    "LogicalNot" => Some(i64::from(v == 0)),
+                    _ => None,
+                }
+            }
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                let l = self.try_eval_i64(left)?;
+                let r = self.try_eval_i64(right)?;
+                match op.as_str() {
+                    "Add" => Some(l.wrapping_add(r)),
+                    "Subtract" => Some(l.wrapping_sub(r)),
+                    "Multiply" => Some(l.wrapping_mul(r)),
+                    "Divide" if r != 0 => Some(l / r),
+                    "LessThan" => Some(i64::from(l < r)),
+                    "LessThanEqual" => Some(i64::from(l <= r)),
+                    "GreaterThan" => Some(i64::from(l > r)),
+                    "GreaterThanEqual" => Some(i64::from(l >= r)),
+                    "Equality" => Some(i64::from(l == r)),
+                    "Inequality" => Some(i64::from(l != r)),
+                    "LogicalAnd" => Some(i64::from(l != 0 && r != 0)),
+                    "LogicalOr" => Some(i64::from(l != 0 || r != 0)),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1237,7 +1662,13 @@ impl Lowerer {
                     c.resize_zext(target_width)
                 })
             }
-            Expr::Conv { operand, .. } => self.try_eval_const(operand, target_width, operand.is_signed()),
+            Expr::Ref { name, .. } => self
+                .const_locals
+                .get(name)
+                .map(|&v| ConstBits::from_i64(target_width, v)),
+            Expr::Conv { operand, .. } => {
+                self.try_eval_const(operand, target_width, operand.is_signed())
+            }
             Expr::Unary { op, operand, .. } if op == "Minus" => {
                 let c = self.try_eval_const(operand, target_width, signed)?;
                 let v = c.to_u128()?;
@@ -1248,9 +1679,13 @@ impl Lowerer {
                 };
                 Some(ConstBits::from_u128(target_width, v.wrapping_neg() & mask))
             }
-            Expr::Binary { op, left, right, .. } => {
+            Expr::Binary {
+                op, left, right, ..
+            } => {
                 let l = self.try_eval_const(left, target_width, signed)?.to_u128()?;
-                let r = self.try_eval_const(right, target_width, signed)?.to_u128()?;
+                let r = self
+                    .try_eval_const(right, target_width, signed)?
+                    .to_u128()?;
                 let mask = if target_width == 128 {
                     u128::MAX
                 } else {
@@ -1266,6 +1701,42 @@ impl Lowerer {
             }
             _ => None,
         }
+    }
+}
+
+fn unwrap_single_stmt(stmt: &Stmt) -> Option<&Stmt> {
+    match stmt {
+        Stmt::Block { items, .. } if items.len() == 1 => unwrap_single_stmt(&items[0]),
+        other => Some(other),
+    }
+}
+
+fn extract_wildcard_const(expr: &Expr, mask_x: bool) -> Option<(ConstBits, ConstBits)> {
+    match expr {
+        Expr::Const {
+            width,
+            bits,
+            mask_z,
+            mask_xz,
+            ..
+        } => {
+            let mask_str = if mask_x {
+                mask_xz.as_ref()
+            } else {
+                mask_z.as_ref()
+            }?;
+            Some((
+                ConstBits::new(*width, bits.clone()),
+                ConstBits::new(*width, mask_str.clone()),
+            ))
+        }
+        Expr::Conv {
+            width, operand, ..
+        } => {
+            let (b, m) = extract_wildcard_const(operand, mask_x)?;
+            Some((b.resize_zext(*width), m.resize_zext(*width)))
+        }
+        _ => None,
     }
 }
 

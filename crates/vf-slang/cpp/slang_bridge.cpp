@@ -27,11 +27,13 @@
 #include "slang/ast/statements/ConditionalStatements.h"
 #include "slang/ast/statements/LoopStatements.h"
 #include "slang/ast/statements/MiscStatements.h"
+#include "slang/ast/symbols/AttributeSymbol.h"
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/MemberSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/SubroutineSymbols.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 #include "slang/ast/types/AllTypes.h"
 #include "slang/diagnostics/TextDiagnosticClient.h"
@@ -69,8 +71,6 @@ public:
         }
         if (isBit)
             return comp.getLogicType();
-        // $anyseq / $anyconst adapt to context width; return 32-bit unsigned integer by default
-        // (slang converts to target width on assignment/cast).
         return comp.getIntType();
     }
 
@@ -88,6 +88,18 @@ std::string svIntToBinary(const SVInt& val, uint32_t width) {
         bits.push_back(b.value == 1 ? '1' : '0');
     }
     return bits;
+}
+
+/// Returns MSB-first mask of known bits ('1' = 0/1, '0' = x/z) for casez/casex wildcards.
+std::string svIntToMask(const SVInt& val, uint32_t width, bool maskX) {
+    std::string mask;
+    mask.reserve(width);
+    for (int32_t i = static_cast<int32_t>(width) - 1; i >= 0; --i) {
+        auto b = val[i];
+        bool isDontCare = (b.value == logic_t::Z_VALUE) || (maskX && b.value == logic_t::X_VALUE);
+        mask.push_back(isDontCare ? '0' : '1');
+    }
+    return mask;
 }
 
 class ElaboratedEmitter {
@@ -159,6 +171,10 @@ public:
                             portInputAssigns.emplace_back(fullName, init);
                             init = nullptr;
                         }
+                        std::vector<std::string> attrs;
+                        for (auto* attr : comp.getAttributes(vs)) {
+                            attrs.emplace_back(attr->name);
+                        }
                         signals.push_back(SignalInfo{
                             fullName,
                             static_cast<uint32_t>(ty.getBitWidth()),
@@ -166,6 +182,7 @@ public:
                             dir,
                             init,
                             &vs,
+                            std::move(attrs),
                         });
                     }
                     else if (ty.isUnpackedArray()) {
@@ -221,6 +238,7 @@ public:
         std::string direction;
         const Expression* initializer;
         const ValueSymbol* sym;
+        std::vector<std::string> attrs;
     };
 
     struct MemInfo {
@@ -340,6 +358,13 @@ public:
             if (s.initializer) {
                 jw.writeProperty("init");
                 emitExpr(*s.initializer);
+            }
+            if (!s.attrs.empty()) {
+                jw.writeProperty("attrs");
+                jw.startArray();
+                for (auto& a : s.attrs)
+                    jw.writeValue(a);
+                jw.endArray();
             }
             jw.endObject();
         }
@@ -492,6 +517,29 @@ public:
                 jw.writeProperty("right"); emitAssertionExpr(b.right);
                 break;
             }
+            case AssertionExprKind::SequenceConcat: {
+                auto& sc = ae.as<SequenceConcatExpr>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("seq_concat"));
+                jw.writeProperty("elements");
+                jw.startArray();
+                for (auto& el : sc.elements) {
+                    jw.startObject();
+                    jw.writeProperty("delay_min"); jw.writeValue(static_cast<uint64_t>(el.delay.min));
+                    if (el.delay.max.has_value()) {
+                        jw.writeProperty("delay_max"); jw.writeValue(static_cast<uint64_t>(*el.delay.max));
+                    }
+                    jw.writeProperty("expr"); emitAssertionExpr(*el.sequence);
+                    jw.endObject();
+                }
+                jw.endArray();
+                break;
+            }
+            case AssertionExprKind::StrongWeak: {
+                auto& sw = ae.as<StrongWeakAssertionExpr>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("strong_weak"));
+                jw.writeProperty("expr"); emitAssertionExpr(sw.expr);
+                break;
+            }
             default:
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("unsupported"));
                 break;
@@ -565,6 +613,11 @@ public:
             case StatementKind::Case: {
                 auto& cs = stmt.as<CaseStatement>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("case"));
+                std::string ck = "normal";
+                if (cs.condition == CaseStatementCondition::WildcardJustZ) ck = "casez";
+                else if (cs.condition == CaseStatementCondition::WildcardXOrZ) ck = "casex";
+                else if (cs.condition == CaseStatementCondition::Inside) ck = "inside";
+                jw.writeProperty("case_kind"); jw.writeValue(ck);
                 jw.writeProperty("expr"); emitExpr(cs.expr);
                 jw.writeProperty("items");
                 jw.startArray();
@@ -601,10 +654,48 @@ public:
                 break;
             }
             case StatementKind::ForLoop: {
-                // Attempt static constant unrolling for bounded procedural loops.
                 auto& fl = stmt.as<ForLoopStatement>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("for_loop"));
                 jw.writeProperty("loc"); jw.writeValue(formatLoc(fl.sourceRange));
+                if (!fl.loopVars.empty()) {
+                    auto* lv = fl.loopVars[0];
+                    jw.writeProperty("loop_var"); jw.writeValue(lv->name);
+                    if (auto* init = lv->getInitializer()) {
+                        jw.writeProperty("init"); emitExpr(*init);
+                    }
+                } else if (!fl.initializers.empty()) {
+                    if (auto* ae = fl.initializers[0]->as_if<AssignmentExpression>()) {
+                        if (auto* nv = ae->left().as_if<ValueExpressionBase>()) {
+                            jw.writeProperty("loop_var"); jw.writeValue(nv->symbol.name);
+                        }
+                        jw.writeProperty("init"); emitExpr(ae->right());
+                    }
+                }
+                if (fl.stopExpr) {
+                    jw.writeProperty("stop"); emitExpr(*fl.stopExpr);
+                }
+                if (!fl.steps.empty()) {
+                    jw.writeProperty("step"); emitExpr(*fl.steps[0]);
+                }
+                jw.writeProperty("body"); emitStmt(fl.body);
+                break;
+            }
+            case StatementKind::RepeatLoop: {
+                auto& rl = stmt.as<RepeatLoopStatement>();
+                EvalContext evalCtx(ASTContext(comp.getRoot(), LookupLocation::max));
+                auto cv = rl.count.eval(evalCtx);
+                uint64_t cnt = cv.isInteger() ? cv.integer().as<uint64_t>().value_or(0) : 0;
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("repeat_loop"));
+                jw.writeProperty("count"); jw.writeValue(cnt);
+                jw.writeProperty("body"); emitStmt(rl.body);
+                break;
+            }
+            case StatementKind::Return: {
+                auto& rs = stmt.as<ReturnStatement>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("return"));
+                if (rs.expr) {
+                    jw.writeProperty("expr"); emitExpr(*rs.expr);
+                }
                 break;
             }
             case StatementKind::VariableDeclaration: {
@@ -648,7 +739,16 @@ public:
         if (expr.kind == ExpressionKind::IntegerLiteral) {
             auto& lit = expr.as<IntegerLiteral>();
             auto val = lit.getValue();
-            emitConst(width, svIntToBinary(val, width), isSigned);
+            jw.startObject();
+            jw.writeProperty("kind"); jw.writeValue(std::string_view("const"));
+            jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+            jw.writeProperty("signed"); jw.writeValue(isSigned);
+            jw.writeProperty("bits"); jw.writeValue(svIntToBinary(val, width));
+            if (val.hasUnknown()) {
+                jw.writeProperty("mask_z"); jw.writeValue(svIntToMask(val, width, false));
+                jw.writeProperty("mask_xz"); jw.writeValue(svIntToMask(val, width, true));
+            }
+            jw.endObject();
             return;
         }
         if (expr.kind == ExpressionKind::UnbasedUnsizedIntegerLiteral) {
@@ -706,6 +806,15 @@ public:
                 jw.writeProperty("signed"); jw.writeValue(isSigned);
                 jw.writeProperty("left"); emitExpr(b.left());
                 jw.writeProperty("right"); emitExpr(b.right());
+                break;
+            }
+            case ExpressionKind::Assignment: {
+                auto& ae = expr.as<AssignmentExpression>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("assign_expr"));
+                jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                jw.writeProperty("signed"); jw.writeValue(isSigned);
+                jw.writeProperty("lhs"); emitExpr(ae.left());
+                jw.writeProperty("rhs"); emitExpr(ae.right());
                 break;
             }
             case ExpressionKind::ConditionalOp: {
@@ -791,17 +900,53 @@ public:
                 }
                 break;
             }
+            case ExpressionKind::MemberAccess: {
+                auto& ma = expr.as<MemberAccessExpression>();
+                if (auto* fs = ma.member.as_if<FieldSymbol>()) {
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("field_select"));
+                    jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                    jw.writeProperty("signed"); jw.writeValue(isSigned);
+                    jw.writeProperty("bit_offset"); jw.writeValue(static_cast<uint64_t>(fs->bitOffset));
+                    jw.writeProperty("value"); emitExpr(ma.value());
+                } else {
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("unsupported"));
+                    jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                    jw.writeProperty("signed"); jw.writeValue(isSigned);
+                }
+                break;
+            }
             case ExpressionKind::Call: {
                 auto& call = expr.as<CallExpression>();
-                jw.writeProperty("kind"); jw.writeValue(std::string_view("call"));
-                jw.writeProperty("name"); jw.writeValue(call.getSubroutineName());
-                jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
-                jw.writeProperty("signed"); jw.writeValue(isSigned);
-                jw.writeProperty("args");
-                jw.startArray();
-                for (auto* a : call.arguments())
-                    emitExpr(*a);
-                jw.endArray();
+                if (!call.isSystemCall()) {
+                    auto* sub = std::get<0>(call.subroutine);
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("func_call"));
+                    jw.writeProperty("name"); jw.writeValue(sub->name);
+                    jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                    jw.writeProperty("signed"); jw.writeValue(isSigned);
+                    jw.writeProperty("params");
+                    jw.startArray();
+                    for (auto* arg : sub->getArguments()) {
+                        jw.writeValue(arg->name);
+                    }
+                    jw.endArray();
+                    jw.writeProperty("args");
+                    jw.startArray();
+                    for (auto* a : call.arguments())
+                        emitExpr(*a);
+                    jw.endArray();
+                    jw.writeProperty("body");
+                    emitStmt(sub->getBody());
+                } else {
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("call"));
+                    jw.writeProperty("name"); jw.writeValue(call.getSubroutineName());
+                    jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                    jw.writeProperty("signed"); jw.writeValue(isSigned);
+                    jw.writeProperty("args");
+                    jw.startArray();
+                    for (auto* a : call.arguments())
+                        emitExpr(*a);
+                    jw.endArray();
+                }
                 break;
             }
             default: {

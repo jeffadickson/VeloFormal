@@ -210,9 +210,13 @@ fn embed_module(
             signal: sig_map[&ff.signal],
             next: expr_map[ff.next.0],
             init: ff.init.clone(),
+            clock: ff.clock.map(|c| vf_ir::ClockSpec {
+                signal: sig_map[&c.signal],
+                edge: c.edge,
+            }),
             async_reset: ff.async_reset.as_ref().map(|r| AsyncReset {
                 cond: expr_map[r.cond.0],
-                reset_val: r.reset_val.clone(),
+                reset_val: expr_map[r.reset_val.0],
             }),
         });
     }
@@ -222,6 +226,10 @@ fn embed_module(
             addr: expr_map[mw.addr.0],
             data: expr_map[mw.data.0],
             enable: expr_map[mw.enable.0],
+            clock: mw.clock.map(|c| vf_ir::ClockSpec {
+                signal: sig_map[&c.signal],
+                edge: c.edge,
+            }),
         });
     }
     // Preserve assumptions from gold/gate inside the miter.

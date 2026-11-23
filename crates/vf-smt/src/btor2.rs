@@ -165,6 +165,20 @@ impl<'a> BtorBuilder<'a> {
                     let _ = writeln!(self.out, "{hit} and {s1} {en} {cond}");
                     let _ = writeln!(self.out, "; cover {} = node {hit}", p.name);
                 }
+                PropertyKind::Fair => {
+                    let imp = self.alloc();
+                    let _ = writeln!(self.out, "{imp} implies {s1} {en} {cond}");
+                    let fid = self.alloc();
+                    let _ = writeln!(self.out, "{fid} fair {imp} ; {}", p.name);
+                }
+                PropertyKind::Live => {
+                    let ncond = self.alloc();
+                    let _ = writeln!(self.out, "{ncond} not {s1} {cond}");
+                    let not_hit = self.alloc();
+                    let _ = writeln!(self.out, "{not_hit} and {s1} {en} {ncond}");
+                    let jid = self.alloc();
+                    let _ = writeln!(self.out, "{jid} justice 1 {not_hit} ; {}", p.name);
+                }
             }
         }
 

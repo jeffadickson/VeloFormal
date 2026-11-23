@@ -1,0 +1,55 @@
+[tasks]
+bmc
+prove
+pdr
+cover
+expect_fail
+
+[options]
+bmc: mode bmc
+bmc: depth 10
+prove: mode prove
+prove: depth 10
+pdr: mode prove
+cover: mode cover
+cover: depth 10
+cover: append 2
+expect_fail: mode bmc
+expect_fail: depth 10
+expect_fail: expect fail
+
+[engines]
+~pdr: smtbmc z3
+pdr: abc pdr
+
+[script]
+read -formal -sv inline_dut.sv
+expect_fail: chparam -set LIMIT 3
+prep -top inline_counter
+
+[file inline_dut.sv]
+module inline_counter #(
+    parameter int LIMIT = 6
+) (
+    input  logic       clk,
+    input  logic       rst_n,
+    output logic [3:0] cnt
+);
+    initial cnt = 4'd0;
+
+    always_ff @(posedge clk) begin
+        if (!rst_n)
+            cnt <= 4'd0;
+        else if (cnt == 4'd5)
+            cnt <= 4'd0;
+        else
+            cnt <= cnt + 4'd1;
+    end
+
+`ifdef FORMAL
+    always_comb begin
+        assert (cnt < LIMIT[3:0]);
+        cover (cnt == 4'd5);
+    end
+`endif
+endmodule
