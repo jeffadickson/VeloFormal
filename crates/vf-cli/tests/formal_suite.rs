@@ -330,7 +330,11 @@ fn differential_verdict_agreement_with_yosys() {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("-lower"))
         .unwrap_or(false);
-    let lower_cmd = if needs_lower { "chformal -lower; " } else { "" };
+    let lower_cmd = if needs_lower {
+        "async2sync; chformal -lower; "
+    } else {
+        ""
+    };
 
     for (file, top, mem_map) in [
         ("counter_prove.sv", "counter_prove", false),
