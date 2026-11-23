@@ -248,6 +248,153 @@ fn embed_module(
     sig_map
 }
 
+/// Questa SLEC (Sequential Logic Equivalence Checking) configuration supporting
+/// pipeline latency offsets, reset sequences, and k-induction / ABC PDR backends.
+#[derive(Debug, Clone)]
+pub struct SlecConfig {
+    pub depth: usize,
+    pub solver: String,
+    /// `"auto"`, `"kind"`, or `"pdr"`.
+    pub engine: String,
+    /// Extra delay cycles to apply to `gold` outputs (use when `gate` has more pipeline stages).
+    pub latency_gold: usize,
+    /// Extra delay cycles to apply to `gate` outputs (use when `gold` has more pipeline stages).
+    pub latency_gate: usize,
+    /// Number of initial cycles to mask comparison while pipeline/reset settles.
+    pub skip_cycles: usize,
+}
+
+impl Default for SlecConfig {
+    fn default() -> Self {
+        Self {
+            depth: 20,
+            solver: "z3".to_string(),
+            engine: "auto".to_string(),
+            latency_gold: 0,
+            latency_gate: 0,
+            skip_cycles: 0,
+        }
+    }
+}
+
+/// Build an SLEC miter with optional pipeline latency alignment and settling-cycle mask.
+pub fn build_slec_miter(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<Module> {
+    let mut miter = build_miter(gold, gate)?;
+    let max_lat = cfg.latency_gold.max(cfg.latency_gate);
+    let settle = cfg.skip_cycles.max(max_lat);
+
+    if cfg.latency_gold == 0 && cfg.latency_gate == 0 && settle == 0 {
+        return Ok(miter);
+    }
+
+    // Build settling enable: 0 for cycles `0..settle`, then 1 forever via shift chain.
+    let mut valid_en = miter.c_bool(true);
+    for i in 0..settle {
+        let s = miter.add_signal(format!("$slec_valid_{i}"), 1, false, SignalKind::Reg);
+        miter.signal_mut(s).init = Some(vf_ir::ConstBits::zero(1));
+        miter.ffs.push(Ff {
+            signal: s,
+            next: valid_en,
+            init: Some(vf_ir::ConstBits::zero(1)),
+            clock: None,
+            async_reset: None,
+        });
+        valid_en = miter.sig_expr(s);
+    }
+
+    // Replace equiv properties with latency-aligned comparisons gated by `valid_en`.
+    let old_props = std::mem::take(&mut miter.properties);
+    let mut delay_counter = 0usize;
+    for mut p in old_props {
+        if p.kind == PropertyKind::Assert {
+            if let ExprKind::Eq(mut a, mut b) = miter.expr(p.cond).kind.clone() {
+                for _ in 0..cfg.latency_gold {
+                    let w = miter.width(a);
+                    let dsig = miter.add_signal(
+                        format!("$slec_gold_d_{delay_counter}"),
+                        w,
+                        false,
+                        SignalKind::Reg,
+                    );
+                    delay_counter += 1;
+                    miter.ffs.push(Ff {
+                        signal: dsig,
+                        next: a,
+                        init: None,
+                        clock: None,
+                        async_reset: None,
+                    });
+                    a = miter.sig_expr(dsig);
+                }
+                for _ in 0..cfg.latency_gate {
+                    let w = miter.width(b);
+                    let dsig = miter.add_signal(
+                        format!("$slec_gate_d_{delay_counter}"),
+                        w,
+                        false,
+                        SignalKind::Reg,
+                    );
+                    delay_counter += 1;
+                    miter.ffs.push(Ff {
+                        signal: dsig,
+                        next: b,
+                        init: None,
+                        clock: None,
+                        async_reset: None,
+                    });
+                    b = miter.sig_expr(dsig);
+                }
+                p.cond = miter.eq(a, b, false);
+            }
+            p.en = miter.logic_and(p.en, valid_en);
+        }
+        miter.properties.push(p);
+    }
+
+    Ok(miter)
+}
+
+pub fn check_slec(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<(Module, ProveOutcome)> {
+    let miter = build_slec_miter(gold, gate, cfg)?;
+    let outcome = match cfg.engine.as_str() {
+        "pdr" => crate::pdr::run_pdr(
+            &miter,
+            &crate::pdr::PdrConfig {
+                smt_solver: cfg.solver.clone(),
+                ..Default::default()
+            },
+        )?,
+        "kind" => run_kinduction(
+            &miter,
+            &ProveConfig {
+                max_k: cfg.depth,
+                solver: cfg.solver.clone(),
+            },
+        )?,
+        _ => {
+            let k = run_kinduction(
+                &miter,
+                &ProveConfig {
+                    max_k: cfg.depth.min(8),
+                    solver: cfg.solver.clone(),
+                },
+            )?;
+            match k {
+                ProveOutcome::Unknown { .. } => crate::pdr::run_pdr(
+                    &miter,
+                    &crate::pdr::PdrConfig {
+                        smt_solver: cfg.solver.clone(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or(k),
+                other => other,
+            }
+        }
+    };
+    Ok((miter, outcome))
+}
+
 pub fn check_equiv(gold: &Module, gate: &Module, cfg: &ProveConfig) -> Result<(Module, ProveOutcome)> {
     let miter = build_miter(gold, gate)?;
     let outcome = run_kinduction(&miter, cfg)?;

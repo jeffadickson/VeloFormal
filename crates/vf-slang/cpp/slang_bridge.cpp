@@ -598,6 +598,8 @@ public:
             case StatementKind::Conditional: {
                 auto& cs = stmt.as<ConditionalStatement>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("if"));
+                jw.writeProperty("check"); jw.writeValue(toString(cs.check));
+                jw.writeProperty("loc"); jw.writeValue(formatLoc(cs.sourceRange));
                 jw.writeProperty("cond");
                 if (!cs.conditions.empty()) {
                     emitExpr(*cs.conditions[0].expr);
@@ -613,6 +615,8 @@ public:
             case StatementKind::Case: {
                 auto& cs = stmt.as<CaseStatement>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("case"));
+                jw.writeProperty("check"); jw.writeValue(toString(cs.check));
+                jw.writeProperty("loc"); jw.writeValue(formatLoc(cs.sourceRange));
                 std::string ck = "normal";
                 if (cs.condition == CaseStatementCondition::WildcardJustZ) ck = "casez";
                 else if (cs.condition == CaseStatementCondition::WildcardXOrZ) ck = "casex";

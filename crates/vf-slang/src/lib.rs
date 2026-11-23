@@ -115,9 +115,18 @@ pub fn elaborate_json(opts: &CompileOptions) -> Result<(String, String)> {
     Ok((json, diag))
 }
 
+pub use lower::InstrumentOptions;
+
 pub fn compile_to_ir(opts: &CompileOptions) -> Result<Module> {
+    compile_to_ir_with_options(opts, InstrumentOptions::default())
+}
+
+pub fn compile_to_ir_with_options(
+    opts: &CompileOptions,
+    inst: InstrumentOptions,
+) -> Result<Module> {
     let (json, _diag) = elaborate_json(opts)?;
     let design: ast::ElaboratedDesign =
         serde_json::from_str(&json).map_err(|e| anyhow!("failed to parse slang bridge JSON: {e}"))?;
-    lower::lower_to_ir(&design)
+    lower::lower_to_ir_with_options(&design, inst)
 }

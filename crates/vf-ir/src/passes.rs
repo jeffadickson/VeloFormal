@@ -208,3 +208,101 @@ pub fn has_multiple_clocks(m: &Module) -> bool {
     }
     clocks.len() > 1
 }
+
+/// Cone-of-Influence (COI) reduction pass: prune combinational assigns, flip-flops, and
+/// memory writes that cannot affect any active formal property (Assert/Assume/Cover/Live/Fair).
+pub fn coi_prune(m: &mut Module) {
+    if m.properties.is_empty() {
+        return;
+    }
+
+    let comb_map: HashMap<SignalId, ExprId> = m.comb.iter().map(|c| (c.signal, c.value)).collect();
+    let ff_map: HashMap<SignalId, &Ff> = m.ffs.iter().map(|f| (f.signal, f)).collect();
+
+    let mut needed_sigs: HashSet<SignalId> = HashSet::new();
+    let mut needed_mems: HashSet<crate::MemId> = HashSet::new();
+    let mut work_exprs: Vec<ExprId> = Vec::new();
+    let mut visited_exprs: HashSet<ExprId> = HashSet::new();
+
+    for p in &m.properties {
+        work_exprs.push(p.cond);
+        work_exprs.push(p.en);
+    }
+
+    while let Some(e) = work_exprs.pop() {
+        if !visited_exprs.insert(e) {
+            continue;
+        }
+        match &m.expr(e).kind {
+            ExprKind::Const(_) => {}
+            ExprKind::Signal(s) => {
+                if needed_sigs.insert(*s) {
+                    if let Some(&val) = comb_map.get(s) {
+                        work_exprs.push(val);
+                    }
+                    if let Some(ff) = ff_map.get(s) {
+                        work_exprs.push(ff.next);
+                        if let Some(ar) = &ff.async_reset {
+                            work_exprs.push(ar.cond);
+                            work_exprs.push(ar.reset_val);
+                        }
+                    }
+                }
+            }
+            ExprKind::MemRead { mem, addr } => {
+                work_exprs.push(*addr);
+                if needed_mems.insert(*mem) {
+                    for mw in m.mem_writes.iter().filter(|w| w.mem == *mem) {
+                        work_exprs.push(mw.addr);
+                        work_exprs.push(mw.data);
+                        work_exprs.push(mw.enable);
+                    }
+                }
+            }
+            ExprKind::Not(a)
+            | ExprKind::Neg(a)
+            | ExprKind::RedAnd(a)
+            | ExprKind::RedOr(a)
+            | ExprKind::RedXor(a)
+            | ExprKind::Slice { expr: a, .. }
+            | ExprKind::Zext { expr: a, .. }
+            | ExprKind::Sext { expr: a, .. } => work_exprs.push(*a),
+            ExprKind::Add(a, b)
+            | ExprKind::Sub(a, b)
+            | ExprKind::Mul(a, b)
+            | ExprKind::UDiv(a, b)
+            | ExprKind::SDiv(a, b)
+            | ExprKind::UMod(a, b)
+            | ExprKind::SMod(a, b)
+            | ExprKind::And(a, b)
+            | ExprKind::Or(a, b)
+            | ExprKind::Xor(a, b)
+            | ExprKind::Shl(a, b)
+            | ExprKind::Lshr(a, b)
+            | ExprKind::Ashr(a, b)
+            | ExprKind::Eq(a, b)
+            | ExprKind::Ne(a, b)
+            | ExprKind::Ult(a, b)
+            | ExprKind::Ule(a, b)
+            | ExprKind::Slt(a, b)
+            | ExprKind::Sle(a, b) => {
+                work_exprs.push(*a);
+                work_exprs.push(*b);
+            }
+            ExprKind::Mux {
+                cond,
+                then_val,
+                else_val,
+            } => {
+                work_exprs.push(*cond);
+                work_exprs.push(*then_val);
+                work_exprs.push(*else_val);
+            }
+            ExprKind::Concat(parts) => work_exprs.extend(parts.iter().copied()),
+        }
+    }
+
+    m.comb.retain(|c| needed_sigs.contains(&c.signal));
+    m.ffs.retain(|f| needed_sigs.contains(&f.signal));
+    m.mem_writes.retain(|w| needed_mems.contains(&w.mem));
+}

@@ -6,8 +6,24 @@ use vf_ir::{
     Module, Property, PropertyKind, SignalId, SignalKind,
 };
 
+/// Automatic instrumentation flags used by Questa-style Formal Apps (AutoCheck & CoverCheck).
+#[derive(Debug, Clone, Default)]
+pub struct InstrumentOptions {
+    /// Emit `cover` goals for every `if`/`else`/`case` branch (CoverCheck).
+    pub branch_covers: bool,
+    /// Emit assertions for `unique` / `unique0` / `priority` case & if overlap/completeness (AutoCheck).
+    pub unique_priority_checks: bool,
+    /// Emit assertions for out-of-bounds memory/array index accesses (AutoCheck).
+    pub oob_memory_checks: bool,
+    /// Emit assertions for divide/modulo by zero (AutoCheck).
+    pub div_zero_checks: bool,
+    /// Emit assertions for unsigned arithmetic add/sub overflow/underflow (AutoCheck).
+    pub overflow_checks: bool,
+}
+
 struct Lowerer {
     module: Module,
+    inst: InstrumentOptions,
     mem_lo: HashMap<MemId, i32>,
     init_state_sig: Option<SignalId>,
     past_counter: usize,
@@ -21,12 +37,19 @@ struct Lowerer {
     const_locals: HashMap<String, i64>,
     /// Local expression bindings (e.g. pure SV function parameters and return vars).
     local_exprs: HashMap<String, ExprId>,
+    /// Current statement guard while lowering expressions (for OOB / div-zero / overflow checks).
+    cur_guard: ExprId,
+    /// Enclosing SystemVerilog block/statement label (e.g. `a_reachable: assert (...)`).
+    cur_label: Option<String>,
 }
 
 impl Lowerer {
-    fn new(name: &str) -> Self {
+    fn new(name: &str, inst: InstrumentOptions) -> Self {
+        let mut module = Module::new(name);
+        let one = module.c_bool(true);
         Self {
-            module: Module::new(name),
+            module,
+            inst,
             mem_lo: HashMap::new(),
             init_state_sig: None,
             past_counter: 0,
@@ -38,6 +61,8 @@ impl Lowerer {
             comb_drivers: HashMap::new(),
             const_locals: HashMap::new(),
             local_exprs: HashMap::new(),
+            cur_guard: one,
+            cur_label: None,
         }
     }
 
@@ -505,10 +530,15 @@ impl Lowerer {
     ) -> Result<()> {
         match stmt {
             Stmt::Empty => Ok(()),
-            Stmt::Block { items, .. } => {
+            Stmt::Block { label, items } => {
+                let saved_label = self.cur_label.clone();
+                if let Some(l) = label.as_ref().filter(|s| !s.is_empty()) {
+                    self.cur_label = Some(l.clone());
+                }
                 for item in items {
                     self.lower_stmt(item, guard, env, nba, mem_writes, is_clocked, clock)?;
                 }
+                self.cur_label = saved_label;
                 Ok(())
             }
             Stmt::Timed { body, .. } => {
@@ -523,18 +553,47 @@ impl Lowerer {
                 self.apply_write(lhs, val, guard, nba, mem_writes, true, clock)
             }
             Stmt::If {
+                check,
+                loc,
                 cond,
                 then,
                 else_branch,
             } => {
+                let saved_g = self.cur_guard;
+                self.cur_guard = guard;
                 let cond_raw = self.lower_expr(cond, env)?;
                 let cond_b = self.module.to_bool(cond_raw);
                 let not_cond = self.module.logic_not(cond_b);
                 let then_guard = self.module.logic_and(guard, cond_b);
                 let else_guard = self.module.logic_and(guard, not_cond);
 
+                if self.inst.branch_covers {
+                    let one = self.module.c_bool(true);
+                    let tag = if loc.is_empty() {
+                        format!("branch_if_then_{}", self.prop_counter)
+                    } else {
+                        format!("branch_if_then@{loc}")
+                    };
+                    self.add_named_property(PropertyKind::Cover, tag, then_guard, one, loc);
+                    let etag = if loc.is_empty() {
+                        format!("branch_if_else_{}", self.prop_counter)
+                    } else {
+                        format!("branch_if_else@{loc}")
+                    };
+                    self.add_named_property(PropertyKind::Cover, etag, else_guard, one, loc);
+                }
+
+                if self.inst.unique_priority_checks
+                    && (check == "Unique" || check == "Priority")
+                    && else_branch.is_none()
+                {
+                    let tag = format!("autocheck_{check}_if_complete@{loc}");
+                    self.add_named_property(PropertyKind::Assert, tag, cond_b, guard, loc);
+                }
+
                 let mut then_env = env.clone();
                 let mut then_nba = nba.clone();
+                self.cur_guard = then_guard;
                 self.lower_stmt(
                     then,
                     then_guard,
@@ -548,6 +607,7 @@ impl Lowerer {
                 let mut else_env = env.clone();
                 let mut else_nba = nba.clone();
                 if let Some(eb) = else_branch {
+                    self.cur_guard = else_guard;
                     self.lower_stmt(
                         eb,
                         else_guard,
@@ -558,17 +618,22 @@ impl Lowerer {
                         clock,
                     )?;
                 }
+                self.cur_guard = saved_g;
 
                 self.merge_maps(cond_b, env, &then_env, &else_env);
                 self.merge_maps(cond_b, nba, &then_nba, &else_nba);
                 Ok(())
             }
             Stmt::Case {
+                check,
+                loc,
                 case_kind,
                 expr,
                 items,
                 default,
             } => {
+                let saved_g = self.cur_guard;
+                self.cur_guard = guard;
                 let sel = self.lower_expr(expr, env)?;
                 let sel_signed = expr.is_signed();
 
@@ -581,19 +646,32 @@ impl Lowerer {
                     HashMap<SignalId, ExprId>,
                 )> = Vec::new();
                 let mut unmatched = guard;
+                let mut any_match = self.module.c_bool(false);
+                let mut overlap = self.module.c_bool(false);
 
-                for item in items {
+                for (idx, item) in items.iter().enumerate() {
                     let mut item_match = self.module.c_bool(false);
                     for e in &item.exprs {
                         let eq = self.lower_case_match(case_kind, sel, sel_signed, e, &base_env)?;
                         item_match = self.module.logic_or(item_match, eq);
                     }
+                    let dup = self.module.logic_and(any_match, item_match);
+                    overlap = self.module.logic_or(overlap, dup);
+                    any_match = self.module.logic_or(any_match, item_match);
+
                     let branch_guard = self.module.logic_and(unmatched, item_match);
                     let not_match = self.module.logic_not(item_match);
                     unmatched = self.module.logic_and(unmatched, not_match);
 
+                    if self.inst.branch_covers {
+                        let one = self.module.c_bool(true);
+                        let tag = format!("branch_case_item_{idx}@{loc}");
+                        self.add_named_property(PropertyKind::Cover, tag, branch_guard, one, loc);
+                    }
+
                     let mut b_env = base_env.clone();
                     let mut b_nba = base_nba.clone();
+                    self.cur_guard = branch_guard;
                     self.lower_stmt(
                         &item.body,
                         branch_guard,
@@ -606,9 +684,27 @@ impl Lowerer {
                     branch_results.push((item_match, b_env, b_nba));
                 }
 
+                if self.inst.unique_priority_checks {
+                    if check == "Unique" || check == "Unique0" {
+                        let no_overlap = self.module.logic_not(overlap);
+                        let tag = format!("autocheck_{check}_case_overlap@{loc}");
+                        self.add_named_property(PropertyKind::Assert, tag, no_overlap, guard, loc);
+                    }
+                    if (check == "Unique" || check == "Priority") && default.is_none() {
+                        let tag = format!("autocheck_{check}_case_complete@{loc}");
+                        self.add_named_property(PropertyKind::Assert, tag, any_match, guard, loc);
+                    }
+                }
+
                 let mut cur_env = base_env.clone();
                 let mut cur_nba = base_nba.clone();
                 if let Some(def) = default {
+                    if self.inst.branch_covers {
+                        let one = self.module.c_bool(true);
+                        let tag = format!("branch_case_default@{loc}");
+                        self.add_named_property(PropertyKind::Cover, tag, unmatched, one, loc);
+                    }
+                    self.cur_guard = unmatched;
                     self.lower_stmt(
                         def,
                         unmatched,
@@ -618,7 +714,30 @@ impl Lowerer {
                         is_clocked,
                         clock,
                     )?;
+                } else if !branch_results.is_empty()
+                    && (case_kind == "normal" || case_kind == "case")
+                {
+                    // Check if constant case items statically cover all 2^sel_w values.
+                    let sel_w = self.module.width(sel);
+                    if sel_w <= 10 {
+                        let mut covered = std::collections::HashSet::new();
+                        for item in items {
+                            for e in &item.exprs {
+                                if let Some(c) = self.try_eval_const(e, sel_w, sel_signed) {
+                                    if let Some(v) = c.to_u64() {
+                                        covered.insert(v);
+                                    }
+                                }
+                            }
+                        }
+                        if covered.len() == (1usize << sel_w) {
+                            let (_, last_env, last_nba) = branch_results.pop().unwrap();
+                            cur_env = last_env;
+                            cur_nba = last_nba;
+                        }
+                    }
                 }
+                self.cur_guard = saved_g;
 
                 for (cond, b_env, b_nba) in branch_results.into_iter().rev() {
                     let prev_env = cur_env.clone();
@@ -897,11 +1016,27 @@ impl Lowerer {
         };
         let idx = self.prop_counter;
         self.prop_counter += 1;
-        let name = if loc.is_empty() {
-            format!("{kind_str}_{idx}")
+        let base = if let Some(lbl) = &self.cur_label {
+            lbl.clone()
         } else {
-            format!("{kind_str}_{idx}@{loc}")
+            format!("{kind_str}_{idx}")
         };
+        let name = if loc.is_empty() {
+            base
+        } else {
+            format!("{base}@{loc}")
+        };
+        self.add_named_property(kind, name, cond, en, loc);
+    }
+
+    fn add_named_property(
+        &mut self,
+        kind: PropertyKind,
+        name: String,
+        cond: ExprId,
+        en: ExprId,
+        loc: &str,
+    ) {
         self.module.properties.push(Property {
             name,
             kind,
@@ -1071,7 +1206,24 @@ impl Lowerer {
                         let mem = self.module.memory(mem_id);
                         let aw = mem.addr_width;
                         let dw = mem.data_width;
+                        let depth = mem.depth;
+                        let mem_name = mem.name.clone();
                         let addr_raw = self.lower_expr(selector, target)?;
+                        if self.inst.oob_memory_checks {
+                            let rw = self.module.width(addr_raw).max(aw + 1);
+                            let addr_ext = self.module.resize(addr_raw, rw, false);
+                            let depth_c = self.module.c_u64(rw, depth as u64);
+                            let in_bounds = self.module.intern(1, ExprKind::Ult(addr_ext, depth_c));
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_oob_mem_write_{mem_name}_{idx}"),
+                                in_bounds,
+                                guard,
+                                "",
+                            );
+                        }
                         let addr = self.module.resize(addr_raw, aw, false);
                         let data = self.module.resize(rhs, dw, false);
                         mem_writes.push(MemWrite {
@@ -1262,6 +1414,42 @@ impl Lowerer {
                     | "BinaryOr" | "BinaryXor" | "BinaryXnor" => {
                         let l = self.module.resize(l, *width, l_signed);
                         let r = self.module.resize(r, *width, r_signed);
+                        if self.inst.div_zero_checks && matches!(op.as_str(), "Divide" | "Mod") {
+                            let zero = self.module.c_u64(*width, 0);
+                            let nonzero = self.module.intern(1, ExprKind::Ne(r, zero));
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            let guard = self.cur_guard;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_div_by_zero_{idx}"),
+                                nonzero,
+                                guard,
+                                "",
+                            );
+                        }
+                        if self.inst.overflow_checks && !*signed && matches!(op.as_str(), "Add" | "Subtract") {
+                            let ew = *width + 1;
+                            let le = self.module.resize(l, ew, false);
+                            let re = self.module.resize(r, ew, false);
+                            let ext_op = if op == "Add" {
+                                self.module.intern(ew, ExprKind::Add(le, re))
+                            } else {
+                                self.module.intern(ew, ExprKind::Sub(le, re))
+                            };
+                            let carry = self.module.slice(ext_op, *width, *width);
+                            let no_ovf = self.module.logic_not(carry);
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            let guard = self.cur_guard;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_{}_overflow_{idx}", op.to_ascii_lowercase()),
+                                no_ovf,
+                                guard,
+                                "",
+                            );
+                        }
                         let res = match op.as_str() {
                             "Add" => self.module.intern(*width, ExprKind::Add(l, r)),
                             "Subtract" => self.module.intern(*width, ExprKind::Sub(l, r)),
@@ -1324,8 +1512,14 @@ impl Lowerer {
                 ..
             } => {
                 let c = self.lower_expr(cond, env)?;
+                let c_b = self.module.to_bool(c);
+                let not_c = self.module.logic_not(c_b);
+                let saved_g = self.cur_guard;
+                self.cur_guard = self.module.logic_and(saved_g, c_b);
                 let t = self.lower_expr(then, env)?;
+                self.cur_guard = self.module.logic_and(saved_g, not_c);
                 let e = self.lower_expr(else_expr, env)?;
+                self.cur_guard = saved_g;
                 let t = self.module.resize(t, *width, then.is_signed());
                 let e = self.module.resize(e, *width, else_expr.is_signed());
                 Ok(self.module.mux(c, t, e))
@@ -1382,7 +1576,25 @@ impl Lowerer {
                         let mem = self.module.memory(mem_id);
                         let aw = mem.addr_width;
                         let dw = mem.data_width;
+                        let depth = mem.depth;
+                        let mem_name = mem.name.clone();
                         let addr_raw = self.lower_expr(selector, env)?;
+                        if self.inst.oob_memory_checks {
+                            let rw = self.module.width(addr_raw).max(aw + 1);
+                            let addr_ext = self.module.resize(addr_raw, rw, false);
+                            let depth_c = self.module.c_u64(rw, depth as u64);
+                            let in_bounds = self.module.intern(1, ExprKind::Ult(addr_ext, depth_c));
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            let guard = self.cur_guard;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_oob_mem_read_{mem_name}_{idx}"),
+                                in_bounds,
+                                guard,
+                                "",
+                            );
+                        }
                         let addr = self.module.resize(addr_raw, aw, false);
                         return Ok(self
                             .module
@@ -1741,5 +1953,12 @@ fn extract_wildcard_const(expr: &Expr, mask_x: bool) -> Option<(ConstBits, Const
 }
 
 pub fn lower_to_ir(design: &ElaboratedDesign) -> Result<Module> {
-    Lowerer::new(&design.module).lower_design(design)
+    Lowerer::new(&design.module, InstrumentOptions::default()).lower_design(design)
+}
+
+pub fn lower_to_ir_with_options(
+    design: &ElaboratedDesign,
+    inst: InstrumentOptions,
+) -> Result<Module> {
+    Lowerer::new(&design.module, inst).lower_design(design)
 }

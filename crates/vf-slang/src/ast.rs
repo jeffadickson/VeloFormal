@@ -80,12 +80,20 @@ pub enum Stmt {
         expr: Expr,
     },
     If {
+        #[serde(default)]
+        check: String,
+        #[serde(default)]
+        loc: String,
         cond: Expr,
         then: Box<Stmt>,
         #[serde(rename = "else")]
         else_branch: Option<Box<Stmt>>,
     },
     Case {
+        #[serde(default)]
+        check: String,
+        #[serde(default)]
+        loc: String,
         #[serde(default = "default_case_kind")]
         case_kind: String,
         expr: Expr,

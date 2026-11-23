@@ -5,6 +5,7 @@ members = [
     "crates/vf-slang",
     "crates/vf-smt",
     "crates/vf-engine",
+    "crates/vf-apps",
     "crates/vf-cli",
 ]
 

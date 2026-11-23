@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+vf-apps = { path = "../vf-apps" }
 vf-engine = { path = "../vf-engine" }
 vf-ir = { path = "../vf-ir" }
 vf-slang = { path = "../vf-slang" }

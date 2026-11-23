@@ -1,0 +1,12 @@
+[package]
+name = "vf-apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+vf-engine = { path = "../vf-engine" }
+vf-ir = { path = "../vf-ir" }
+vf-slang = { path = "../vf-slang" }
+vf-smt = { path = "../vf-smt" }
