@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools, Z3, and Yosys (differential oracle)
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build z3 yosys
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and run formal test suite
+        run: cargo test --workspace

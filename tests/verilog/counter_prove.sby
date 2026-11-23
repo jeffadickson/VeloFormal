@@ -1,0 +1,13 @@
+[options]
+mode prove
+depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv counter_prove.sv
+prep -top counter_prove
+
+[files]
+counter_prove.sv
