@@ -324,6 +324,14 @@ fn differential_verdict_agreement_with_yosys() {
         return;
     }
 
+    // Yosys >= 0.39 emits `$check` cells and requires `chformal -lower` before `sat`.
+    let needs_lower = std::process::Command::new("yosys")
+        .args(["-p", "help chformal"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("-lower"))
+        .unwrap_or(false);
+    let lower_cmd = if needs_lower { "chformal -lower; " } else { "" };
+
     for (file, top, mem_map) in [
         ("counter_prove.sv", "counter_prove", false),
         ("rr_arbiter.sv", "rr_arbiter", false),
@@ -339,7 +347,7 @@ fn differential_verdict_agreement_with_yosys() {
 
         let mem_cmd = if mem_map { "memory_map; " } else { "" };
         let script = format!(
-            "read_verilog -formal -sv {}; prep -top {top}; {mem_cmd}chformal -cover -remove; sat -tempinduct -prove-asserts",
+            "read_verilog -formal -sv {}; prep -top {top}; {mem_cmd}{lower_cmd}chformal -cover -remove; sat -tempinduct -prove-asserts",
             path.display()
         );
         let yo = std::process::Command::new("yosys")
