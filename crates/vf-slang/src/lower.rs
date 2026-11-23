@@ -41,6 +41,8 @@ struct Lowerer {
     cur_guard: ExprId,
     /// Enclosing SystemVerilog block/statement label (e.g. `a_reachable: assert (...)`).
     cur_label: Option<String>,
+    /// Active SVA `disable iff (cond)` condition (aborts in-flight multi-cycle sequences).
+    cur_disable: Option<ExprId>,
 }
 
 impl Lowerer {
@@ -63,6 +65,7 @@ impl Lowerer {
             local_exprs: HashMap::new(),
             cur_guard: one,
             cur_label: None,
+            cur_disable: None,
         }
     }
 
@@ -868,14 +871,23 @@ impl Lowerer {
             }
             AssertionExpr::DisableIff { cond, expr } => {
                 let dis = self.lower_expr(cond, env)?;
-                let not_dis = self.module.logic_not(dis);
+                let dis_b = self.module.to_bool(dis);
+                let prev_dis = self.cur_disable;
+                self.cur_disable = Some(match prev_dis {
+                    Some(p) => self.module.logic_or(p, dis_b),
+                    None => dis_b,
+                });
+                let not_dis = self.module.logic_not(dis_b);
                 let new_guard = self.module.logic_and(guard, not_dis);
-                self.lower_concurrent_assert(assert_kind, expr, new_guard, env, loc)
+                let res = self.lower_concurrent_assert(assert_kind, expr, new_guard, env, loc);
+                self.cur_disable = prev_dis;
+                res
             }
             AssertionExpr::Simple { expr } => {
                 let c = self.lower_expr(expr, env)?;
                 let c = self.module.to_bool(c);
-                self.add_property(assert_kind, c, guard, loc);
+                let en = self.apply_disable(guard);
+                self.add_property(assert_kind, c, en, loc);
                 Ok(())
             }
             AssertionExpr::Unary { op, expr } => match op.as_str() {
@@ -888,13 +900,15 @@ impl Lowerer {
                         "assume" => "fair",
                         _ => "live",
                     };
-                    self.add_property(mapped_kind, c, guard, loc);
+                    let en = self.apply_disable(guard);
+                    self.add_property(mapped_kind, c, en, loc);
                     Ok(())
                 }
                 "Not" => {
                     let inner = self.lower_assertion_bool(expr, env)?;
                     let negated = self.module.logic_not(inner);
-                    self.add_property(assert_kind, negated, guard, loc);
+                    let en = self.apply_disable(guard);
+                    self.add_property(assert_kind, negated, en, loc);
                     Ok(())
                 }
                 other => bail!("unsupported SVA unary operator '{other}' at {loc}"),
@@ -908,21 +922,23 @@ impl Lowerer {
                 "NonOverlappedImplication" => {
                     let a = self.lower_assertion_bool(left, env)?;
                     let trig = self.module.logic_and(guard, a);
-                    let prev_trig = self.make_past_reg(trig, Some(ConstBits::zero(1)));
+                    let prev_trig = self.make_sva_delay_reg(trig);
                     self.lower_concurrent_assert(assert_kind, right, prev_trig, env, loc)
                 }
                 "And" => {
                     let a = self.lower_assertion_bool(left, env)?;
                     let b = self.lower_assertion_bool(right, env)?;
                     let both = self.module.logic_and(a, b);
-                    self.add_property(assert_kind, both, guard, loc);
+                    let en = self.apply_disable(guard);
+                    self.add_property(assert_kind, both, en, loc);
                     Ok(())
                 }
                 "Or" => {
                     let a = self.lower_assertion_bool(left, env)?;
                     let b = self.lower_assertion_bool(right, env)?;
                     let either = self.module.logic_or(a, b);
-                    self.add_property(assert_kind, either, guard, loc);
+                    let en = self.apply_disable(guard);
+                    self.add_property(assert_kind, either, en, loc);
                     Ok(())
                 }
                 other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
@@ -936,13 +952,13 @@ impl Lowerer {
                     if d_min > 0 || d_max > 0 {
                         if d_min == d_max {
                             for _ in 0..d_min {
-                                cur_trig = self.make_past_reg(cur_trig, Some(ConstBits::zero(1)));
+                                cur_trig = self.make_sva_delay_reg(cur_trig);
                             }
                         } else {
                             let mut shifted = cur_trig;
                             let mut any = self.module.c_bool(false);
                             for step in 1..=d_max {
-                                shifted = self.make_past_reg(shifted, Some(ConstBits::zero(1)));
+                                shifted = self.make_sva_delay_reg(shifted);
                                 if step >= d_min {
                                     any = self.module.logic_or(any, shifted);
                                 }
@@ -952,7 +968,8 @@ impl Lowerer {
                     }
                     let cond = self.lower_assertion_bool(&el.expr, env)?;
                     if i + 1 == elements.len() {
-                        self.add_property(assert_kind, cond, cur_trig, loc);
+                        let en = self.apply_disable(cur_trig);
+                        self.add_property(assert_kind, cond, en, loc);
                     } else {
                         cur_trig = self.module.logic_and(cur_trig, cond);
                     }
@@ -961,6 +978,21 @@ impl Lowerer {
             }
             _ => bail!("unsupported concurrent assertion expression at {loc}"),
         }
+    }
+
+    fn apply_disable(&mut self, guard: ExprId) -> ExprId {
+        if let Some(dis) = self.cur_disable {
+            let not_dis = self.module.logic_not(dis);
+            self.module.logic_and(guard, not_dis)
+        } else {
+            guard
+        }
+    }
+
+    fn make_sva_delay_reg(&mut self, trig: ExprId) -> ExprId {
+        let gated_in = self.apply_disable(trig);
+        let delayed = self.make_past_reg(gated_in, Some(ConstBits::zero(1)));
+        self.apply_disable(delayed)
     }
 
     fn lower_assertion_bool(
@@ -994,7 +1026,7 @@ impl Lowerer {
                 for (i, el) in elements.iter().enumerate() {
                     if i > 0 {
                         for _ in 0..el.delay_min {
-                            matched = self.make_past_reg(matched, Some(ConstBits::zero(1)));
+                            matched = self.make_sva_delay_reg(matched);
                         }
                     }
                     let c = self.lower_assertion_bool(&el.expr, env)?;

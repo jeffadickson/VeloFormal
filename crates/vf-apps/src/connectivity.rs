@@ -49,7 +49,10 @@ pub fn parse_connectivity_str(text: &str) -> Result<Vec<ConnRule>> {
         if cols.len() < 2 {
             bail!("connectivity CSV line {}: expected at least `src,dst`", idx + 1);
         }
-        if idx == 0 && cols[0].eq_ignore_ascii_case("src") && cols[1].eq_ignore_ascii_case("dst") {
+        if rules.is_empty()
+            && cols[0].eq_ignore_ascii_case("src")
+            && cols[1].eq_ignore_ascii_case("dst")
+        {
             continue;
         }
         let src = cols[0].to_string();

@@ -1,0 +1,8 @@
+# Connectivity specification for soc_pinmux
+# Format: src,dst,cond,invert,delay
+src,dst,cond,invert,delay
+gpio_out,pad_out,func_sel == 0,0,0
+uart_out,pad_out,func_sel == 1,0,0
+spi_out,pad_out,func_sel == 2,0,0
+irq_in,irq_n_out,,1,0
+dbg_bus,trace_out,dbg_en,0,1

@@ -99,7 +99,7 @@ pub fn parse_regmap_str(text: &str) -> Result<Vec<RegSpec>> {
                 idx + 1
             );
         }
-        if idx == 0 && cols[0].eq_ignore_ascii_case("name") {
+        if specs.is_empty() && cols[0].eq_ignore_ascii_case("name") {
             continue;
         }
         let name = cols[0].to_string();

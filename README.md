@@ -105,6 +105,10 @@ Reusable SystemVerilog formal protocol checkers included in `vip/`:
 veloformal prove vip/vf_handshake.sv vip/vf_apb.sv tests/verilog/vip_dut_test.sv --top vip_dut_test
 ```
 
+## Examples
+
+See [`examples/README.md`](examples/README.md) for **17 self-contained, CI-verified SystemVerilog formal verification examples** covering FSMs, Ready/Valid skid buffers, FIFO scoreboards, AMBA AXI4-Lite & APB VIP, round-robin arbitration & starvation lassos, multi-cycle UART SVA, IC3/PDR non-inductive invariants, 3-stage pipelined SLEC, AutoCheck, CoverCheck, Connectivity, Secure IFT, X-Check, Register Check, CDC/RDC + Gray-code proofs, and Vacuity detection.
+
 ## SymbiYosys & SystemVerilog Formal Coverage
 
 - **`.sby` Runner**: `[tasks]` with tag filtering (`tag:`, `~tag:`), inline `[file <name>]` blocks, `[options]` (`mode bmc|prove|cover|live`, `depth`, `skip`, `append`, `expect`, `multiclock`), `[engines]` (`smtbmc z3|bitwuzla|cvc5`, `abc pdr` with parallel portfolio racing), `[script]` (`read`/`read_verilog`, `prep`, `chparam`, `chformal`, `async2sync`, `clk2fflogic`), and SBY-compatible `<workdir>/status` + `engine_0/*.vcd` outputs.

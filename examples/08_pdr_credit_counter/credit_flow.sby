@@ -1,0 +1,19 @@
+[tasks]
+prove_pdr
+cover
+
+[options]
+prove_pdr: mode prove
+cover: mode cover
+cover: depth 12
+
+[engines]
+prove_pdr: abc pdr
+cover: smtbmc z3
+
+[script]
+read -formal credit_flow.sv
+prep -top credit_flow
+
+[files]
+credit_flow.sv

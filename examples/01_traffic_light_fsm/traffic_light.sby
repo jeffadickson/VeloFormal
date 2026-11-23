@@ -1,0 +1,22 @@
+[tasks]
+prove
+bmc
+cover
+
+[options]
+prove: mode prove
+prove: depth 10
+bmc: mode bmc
+bmc: depth 15
+cover: mode cover
+cover: depth 10
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal traffic_light.sv
+prep -top traffic_light
+
+[files]
+traffic_light.sv
