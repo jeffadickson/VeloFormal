@@ -19,6 +19,8 @@ pub struct InstrumentOptions {
     pub div_zero_checks: bool,
     /// Emit assertions for unsigned arithmetic add/sub overflow/underflow (AutoCheck).
     pub overflow_checks: bool,
+    /// Emit assertions for out-of-range shift amounts (`rhs >= width(lhs)`) (AutoCheck).
+    pub shift_overflow_checks: bool,
 }
 
 struct Lowerer {
@@ -1779,23 +1781,45 @@ impl Lowerer {
                         };
                         Ok(res)
                     }
-                    "LogicalShiftLeft" | "ArithmeticShiftLeft" => {
+                    "LogicalShiftLeft" | "ArithmeticShiftLeft" | "LogicalShiftRight"
+                    | "ArithmeticShiftRight" => {
+                        if self.inst.shift_overflow_checks {
+                            let trivial_const = match &self.module.expr(r).kind {
+                                ExprKind::Const(c) => c.to_u64().is_some_and(|v| v < (*width as u64)),
+                                _ => false,
+                            };
+                            if !trivial_const {
+                                let rw = self.module.width(r);
+                                let needed = ((*width as u64).max(1).ilog2() + 2).max(2);
+                                let cmp_w = rw.max(needed);
+                                let re = self.module.resize(r, cmp_w, false);
+                                let limit = self.module.c_u64(cmp_w, *width as u64);
+                                let ok = self.module.intern(1, ExprKind::Ult(re, limit));
+                                let idx = self.prop_counter;
+                                self.prop_counter += 1;
+                                let guard = self.cur_guard;
+                                self.add_named_property(
+                                    PropertyKind::Assert,
+                                    format!("autocheck_shift_overflow_{idx}"),
+                                    ok,
+                                    guard,
+                                    "",
+                                );
+                            }
+                        }
                         let l = self.module.resize(l, *width, l_signed);
                         let r = self.module.resize(r, *width, false);
-                        Ok(self.module.intern(*width, ExprKind::Shl(l, r)))
-                    }
-                    "LogicalShiftRight" => {
-                        let l = self.module.resize(l, *width, l_signed);
-                        let r = self.module.resize(r, *width, false);
-                        Ok(self.module.intern(*width, ExprKind::Lshr(l, r)))
-                    }
-                    "ArithmeticShiftRight" => {
-                        let l = self.module.resize(l, *width, l_signed);
-                        let r = self.module.resize(r, *width, false);
-                        let kind = if *signed || l_signed {
-                            ExprKind::Ashr(l, r)
-                        } else {
-                            ExprKind::Lshr(l, r)
+                        let kind = match op.as_str() {
+                            "LogicalShiftLeft" | "ArithmeticShiftLeft" => ExprKind::Shl(l, r),
+                            "LogicalShiftRight" => ExprKind::Lshr(l, r),
+                            "ArithmeticShiftRight" => {
+                                if *signed || l_signed {
+                                    ExprKind::Ashr(l, r)
+                                } else {
+                                    ExprKind::Lshr(l, r)
+                                }
+                            }
+                            _ => unreachable!(),
                         };
                         Ok(self.module.intern(*width, kind))
                     }

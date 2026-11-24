@@ -7,16 +7,16 @@ Native Verilog & SystemVerilog formal verification suite written in Rust, with a
 ## Architecture
 
 ```text
-Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .do)
+Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .do)
   │
   ▼  vf-slang   — Embedded Slang v9.1 C++20 frontend + IEEE 1800 SVA (`bind`, repetition, `until`) & RTL instrumentation
   ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, coi_prune, chformal, async2sync, clk2fflogic)
   ▼  vf-smt     — SMT-LIB2 (QF_BV/QF_ABV), BTOR2, binary AIGER 1.0 bit-blaster, solver pipe, VCD writer
-  ▼  vf-engine  — BMC, k-Induction, IC3/PDR (ABC), Liveness/Fairness (lasso), Cover, Vacuity, SLEC
-  ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT), CDC/RDC (SDC)
+  ▼  vf-engine  — BMC, k-Induction, IC3/PDR (ABC), Portfolio, Liveness/Fairness, Cover, Vacuity, Dead-End, Backtrace, SLEC
+  ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (IEEE 1801 UPF)
   ▼  vf-dsl     — `.vfc` v1.0 Contract DSL (brace syntax, strict typing, native IR lowering & IEEE 1800 SVA `bind` export)
-  ▼  vf-cli     — `veloformal` CLI, `.sby` runner, Questa `.do` Tcl runner, Interactive HTML/SVG Waveform & SARIF/JUnit/JSON Sign-Off reports
-  └── vip/      — Reusable Formal Assertion Library (Ready/Valid, AXI4-Lite, APB, FIFO scoreboard)
+  ▼  vf-cli     — `veloformal` CLI, `.sby` runner, Questa `.do` Tcl runner, Interactive HTML/SVG Waveform + Backtrace & SARIF/JUnit/JSON reports
+  └── vip/      — Reusable Formal Assertion & QFL Library (Ready/Valid, AXI4-Lite, AXI4-Stream, APB, AHB-Lite, Wishbone, TileLink-UL, FIFO, Arbiter, Gray-Code)
 ```
 
 ## Prerequisites
@@ -58,16 +58,17 @@ veloformal fmt examples/18_vfc_contracts/counter.vfc --check
 ## Core Formal Verification (SymbiYosys / PropCheck / SLEC / Questa Tcl)
 
 ```bash
-# Bounded Model Checking (BMC) with skip, append, and VCD counterexample
+# Bounded Model Checking (BMC) with Root-Cause Backtrace, skip, append, and VCD counterexample
 veloformal bmc tests/verilog/counter_fail.sv --depth 10 --append 2 --vcd counter_fail.vcd
 
-# Unbounded safety proofs: k-induction, IC3/PDR, or auto, with optional COI pruning
+# Unbounded safety proofs: k-induction, IC3/PDR, or portfolio, with optional COI pruning
 veloformal prove tests/verilog/sync_fifo.sv --engine kind
 veloformal prove tests/verilog/pdr_non_inductive.sv --engine pdr --coi
 veloformal prove examples/19_industry_standards/sva_bind_and_rep.sv --top pulse_stretcher
 
-# Assertion vacuity analysis (flags assertions whose antecedents are unreachable)
+# Assertion vacuity & over-constraint dead-end detection (Questa PropCheck)
 veloformal vacuity tests/verilog/vacuity_test.sv
+veloformal deadend examples/21_questa_parity/overconstrained_fifo.sv
 
 # Liveness & fairness checking (bounded fair lasso detection)
 veloformal live tests/verilog/liveness_starve.sv --depth 10 --vcd lasso.vcd
@@ -80,10 +81,13 @@ veloformal sby tests/verilog/multi_task.sby -d workdir/
 
 # Questa-Formal-compatible Tcl (.do) runner with SARIF / JUnit / JSON / Interactive HTML Dashboard
 veloformal tcl examples/19_industry_standards/questa_signoff.do --format sarif --report signoff.html
+veloformal tcl examples/21_questa_parity/run_questa_parity.do --report parity_signoff.html
 
-# Sequential Logic Equivalence Checking (SLEC) with pipeline latency alignment & PDR
+# Sequential Logic Equivalence Checking (SLEC): pipeline latency, reset seq, LPGC valid-cond, safety-insertion output filtering
 veloformal equiv --gold tests/verilog/adder_gold.sv --gate tests/verilog/adder_gate.sv
 veloformal equiv --gold tests/verilog/slec_pipe_gold.sv --gate tests/verilog/slec_pipe_gate.sv --latency-gold 2
+veloformal equiv --gold examples/21_questa_parity/lpgc_gold.sv --gate examples/21_questa_parity/lpgc_gate.sv \
+    --reset rst=1 --valid-cond out_valid --ignore-output cg_active
 
 # Export IR, BTOR2, SMT-LIB2, or binary AIGER
 veloformal dump-ir tests/verilog/sync_fifo.sv
@@ -92,11 +96,18 @@ veloformal dump-smt2 tests/verilog/sync_fifo.sv
 veloformal dump-aiger tests/verilog/pdr_non_inductive.sv -o pdr.aig
 ```
 
-## Formal Apps (Questa Formal Suite Equivalents)
+## Formal Apps (Questa One / Questa Formal Suite Equivalents)
 
 ```bash
-# AutoCheck: push-button RTL bug hunting (OOB memory, div-by-zero, unique/priority, overflow, FSM deadlock)
-veloformal autocheck tests/verilog/autocheck_bugs.sv --fsm fsm_state --vcd-dir waves/
+# AutoCheck: push-button RTL bug hunting (OOB memory, div-by-zero, shift-overflow, unique/priority, overflow, FSM deadlock/livelock/unreachable, clock-as-data, const-reg)
+veloformal autocheck examples/21_questa_parity/fsm_livelock.sv --fsm state --check-const-regs --vcd-dir waves/
+
+# Analyze Fault (ISO 26262): formal SA0/SA1/SEU fault injection, Safe/Masked vs Detected vs Dangerous SPF, SPFM & Diagnostic Coverage
+veloformal fault examples/21_questa_parity/tmr_voter.sv --target r0 --output safe_out
+veloformal fault examples/21_questa_parity/parity_reg.sv --target data_reg --alarm parity_err --report fmeda.html
+
+# PowerCheck (IEEE 1801 UPF): formal power-domain isolation clamp (0 / 1 / latch), power-off sequencing & un-isolated crossing detection
+veloformal powercheck examples/21_questa_parity/upf_iso_dut.sv --upf examples/21_questa_parity/upf_iso.upf --pd-off PD_ACCEL=pd_off
 
 # CoverCheck: automatic branch reachability witnesses & unbounded dead-code proofs
 veloformal covercheck tests/verilog/covercheck_dead.sv
@@ -110,18 +121,18 @@ veloformal secure tests/verilog/secure_crypto.sv --source secret_key --target pu
 # X-Check: 4-state dual-rail formal X-propagation verification (controlling values & uninitialized FFs)
 veloformal xcheck tests/verilog/xcheck_uninit.sv --target out_leak --target out_masked
 
-# Register Check: verify CSR reset values, RW/RO/W1C/W1S/WO policies, masks & non-aliasing (CSV, SystemRDL .rdl, IP-XACT .xml)
+# Register Check: CSR reset, RW/RO/W1C/W1S/WO, masks & non-aliasing (CSV, SystemRDL .rdl, IP-XACT .xml; Raw or AMBA APB; 0/1-cycle read latency)
 veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19_industry_standards/uart_csr.rdl
-veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19_industry_standards/uart_csr.xml
+veloformal regcheck examples/21_questa_parity/apb_csr.sv --spec examples/21_questa_parity/apb_csr.rdl --protocol apb
 
 # CDC / RDC: structural clock/reset-domain crossing analyzer + SDC constraints + formal Gray-code verification
 veloformal cdc examples/16_cdc_async_bridge/async_bridge.sv --gray wr_ptr_gray
 veloformal cdc examples/16_cdc_async_bridge/async_bridge_buggy.sv --sdc examples/19_industry_standards/async_bridge.sdc
 ```
 
-## Formal Assertion Library (`vip/`)
+## Formal Assertion & QFL Library (`vip/`)
 
-Reusable SystemVerilog formal protocol checkers included in `vip/`:
+Reusable SystemVerilog formal protocol & QFL checkers included in `vip/`:
 
 - [`vip/vf_handshake.sv`](vip/vf_handshake.sv) — Ready/Valid stability under backpressure + transfer covers
 - [`vip/vf_axi4_lite.sv`](vip/vf_axi4_lite.sv) — AMBA AXI4-Lite AW/W/B/AR/R channel compliance
@@ -131,6 +142,8 @@ Reusable SystemVerilog formal protocol checkers included in `vip/`:
 - [`vip/vf_wishbone.sv`](vip/vf_wishbone.sv) — Wishbone B4 pipelined/classic protocol checker
 - [`vip/vf_tilelink_ul.sv`](vip/vf_tilelink_ul.sv) — SiFive TileLink-UL Channel A/D checker
 - [`vip/vf_fifo_props.sv`](vip/vf_fifo_props.sv) — Reusable FIFO safety & `$anyconst` data-integrity scoreboard
+- [`vip/vf_arbiter_props.sv`](vip/vf_arbiter_props.sv) — QFL Arbiter mutual-exclusion, no-spurious-grant & work-conserving checker
+- [`vip/vf_gray_code.sv`](vip/vf_gray_code.sv) — QFL Gray-code single-bit transition checker (`$countones(g ^ $past(g)) <= 1`)
 
 ## Proof Scalability, Formal Sign-Off Coverage & IDE (`vf-lsp`)
 

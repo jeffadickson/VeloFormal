@@ -1,0 +1,31 @@
+# IEEE 1801 UPF Power Intent Specification for upf_iso_dut
+upf_version 2.1
+
+create_power_domain PD_ACCEL -elements {pd_data pd_nready pd_status}
+
+# Clamp data bus to 0 when isolated
+set_isolation iso_data_zero \
+    -domain PD_ACCEL \
+    -clamp_value 0 \
+    -elements {pd_data}
+
+set_isolation_control iso_data_zero \
+    -domain PD_ACCEL \
+    -isolation_signal iso_en \
+    -isolation_sense high
+
+# Clamp active-low ready signal to 1 when isolated
+set_isolation iso_nready_one \
+    -domain PD_ACCEL \
+    -clamp_value 1 \
+    -elements {pd_nready} \
+    -isolation_signal iso_en \
+    -isolation_sense high
+
+# Hold status register value (latch clamp) when isolated
+set_isolation iso_status_latch \
+    -domain PD_ACCEL \
+    -clamp_value latch \
+    -elements {pd_status} \
+    -isolation_signal iso_en \
+    -isolation_sense high

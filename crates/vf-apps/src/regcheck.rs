@@ -49,8 +49,28 @@ pub struct RegSpec {
     pub mask: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegProtocol {
+    #[default]
+    Raw,
+    Apb,
+}
+
+impl RegProtocol {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "raw" | "simple" | "" => Ok(Self::Raw),
+            "apb" | "apb3" | "apb4" => Ok(Self::Apb),
+            other => bail!("unsupported regcheck bus protocol '{other}' (expected raw or apb)"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RegBusConfig {
+    pub protocol: RegProtocol,
+    /// Read data latency in clock cycles (`0` = combinational read mux, `1` = registered read output).
+    pub read_latency: usize,
     pub rst: Option<String>,
     pub rst_active_low: Option<bool>,
     pub wr_en: Option<String>,
@@ -58,6 +78,9 @@ pub struct RegBusConfig {
     pub addr: Option<String>,
     pub wdata: Option<String>,
     pub rdata: Option<String>,
+    pub psel: Option<String>,
+    pub penable: Option<String>,
+    pub pready: Option<String>,
     pub depth: usize,
     pub solver: String,
     pub use_pdr: bool,
@@ -524,10 +547,15 @@ fn parse_num(s: &str) -> Result<u64> {
 }
 
 struct ResolvedBus {
+    protocol: RegProtocol,
+    read_latency: usize,
     rst: SignalId,
     rst_active_low: bool,
     wr_en: SignalId,
     rd_en: Option<SignalId>,
+    psel: Option<SignalId>,
+    penable: Option<SignalId>,
+    pready: Option<SignalId>,
     addr: SignalId,
     wdata: SignalId,
     rdata: SignalId,
@@ -550,29 +578,53 @@ fn resolve_bus(m: &Module, cfg: &RegBusConfig) -> Result<ResolvedBus> {
 
     let rst = find_any(&cfg.rst, &["rst", "rst_n", "reset", "reset_n", "presetn"], "rst")?;
     let rst_name = m.signal(rst).name.to_ascii_lowercase();
-    let rst_active_low = cfg
-        .rst_active_low
-        .unwrap_or_else(|| rst_name.ends_with("_n") || rst_name.ends_with("resetn") || rst_name == "rstn");
+    let rst_active_low = cfg.rst_active_low.unwrap_or_else(|| {
+        rst_name.ends_with("_n") || rst_name.ends_with("resetn") || rst_name == "rstn"
+    });
     let wr_en = find_any(&cfg.wr_en, &["wr_en", "we", "write_en", "pwrite"], "wr-en")?;
     let rd_en = if let Some(name) = &cfg.rd_en {
         Some(
             m.find_signal(name)
                 .ok_or_else(|| anyhow!("regcheck: rd_en signal '{name}' not found"))?,
         )
-    } else {
+    } else if cfg.protocol == RegProtocol::Raw {
         ["rd_en", "re", "read_en"]
             .iter()
             .find_map(|d| m.find_signal(d))
+    } else {
+        None
     };
-    let addr = find_any(&cfg.addr, &["addr", "paddr", "reg_addr"], "addr")?;
-    let wdata = find_any(&cfg.wdata, &["wdata", "pwdata", "din"], "wdata")?;
-    let rdata = find_any(&cfg.rdata, &["rdata", "prdata", "dout"], "rdata")?;
+
+    let (psel, penable, pready) = if cfg.protocol == RegProtocol::Apb {
+        let ps = find_any(&cfg.psel, &["psel", "pselx", "PSEL"], "psel")?;
+        let pe = find_any(&cfg.penable, &["penable", "PENABLE"], "penable")?;
+        let pr = if let Some(name) = &cfg.pready {
+            Some(
+                m.find_signal(name)
+                    .ok_or_else(|| anyhow!("regcheck: pready signal '{name}' not found"))?,
+            )
+        } else {
+            ["pready", "PREADY"].iter().find_map(|d| m.find_signal(d))
+        };
+        (Some(ps), Some(pe), pr)
+    } else {
+        (None, None, None)
+    };
+
+    let addr = find_any(&cfg.addr, &["addr", "paddr", "PADDR", "reg_addr"], "addr")?;
+    let wdata = find_any(&cfg.wdata, &["wdata", "pwdata", "PWDATA", "din"], "wdata")?;
+    let rdata = find_any(&cfg.rdata, &["rdata", "prdata", "PRDATA", "dout"], "rdata")?;
 
     Ok(ResolvedBus {
+        protocol: cfg.protocol,
+        read_latency: cfg.read_latency.min(1),
         rst,
         rst_active_low,
         wr_en,
         rd_en,
+        psel,
+        penable,
+        pready,
         addr,
         wdata,
         rdata,
@@ -581,7 +633,8 @@ fn resolve_bus(m: &Module, cfg: &RegBusConfig) -> Result<ResolvedBus> {
 
 /// Questa Register Check equivalent: synthesizes and proves formal CSR verification
 /// properties (reset values, RW/RO/W1C/W1S/WO access policies, reserved bit masking,
-/// and cross-register non-aliasing) purely from the CSR bus interface + CSV register map.
+/// and cross-register non-aliasing) purely from the CSR bus interface + CSV/SystemRDL/IP-XACT map.
+/// Supports both Raw CSR buses and native AMBA APB3/APB4 (`--protocol apb`) + 0/1-cycle read latency.
 pub fn run_regcheck(
     base: &Module,
     specs: &[RegSpec],
@@ -629,6 +682,25 @@ pub fn run_regcheck(
     Ok(findings)
 }
 
+fn add_protocol_assumptions(m: &mut Module, bus: &ResolvedBus) {
+    if bus.protocol == RegProtocol::Apb {
+        // Legal AMBA APB: `penable` may only be asserted when `psel` is high.
+        if let (Some(psel), Some(penable)) = (bus.psel, bus.penable) {
+            let ps = m.sig_expr(psel);
+            let pe = m.sig_expr(penable);
+            let ps_b = m.to_bool(ps);
+            let pe_b = m.to_bool(pe);
+            m.properties.push(Property {
+                name: "$apb_penable_implies_psel".into(),
+                kind: PropertyKind::Assume,
+                cond: ps_b,
+                en: pe_b,
+                source: None,
+            });
+        }
+    }
+}
+
 fn rst_active_expr(m: &mut Module, bus: &ResolvedBus) -> ExprId {
     let r = m.sig_expr(bus.rst);
     let rb = m.to_bool(r);
@@ -639,10 +711,40 @@ fn rst_active_expr(m: &mut Module, bus: &ResolvedBus) -> ExprId {
     }
 }
 
+fn wr_active_expr(m: &mut Module, bus: &ResolvedBus) -> ExprId {
+    let wr = m.sig_expr(bus.wr_en);
+    let wr_b = m.to_bool(wr);
+    if bus.protocol == RegProtocol::Apb {
+        let ps = m.sig_expr(bus.psel.unwrap());
+        let pe = m.sig_expr(bus.penable.unwrap());
+        let xfer = m.logic_and(ps, pe);
+        let xfer = if let Some(pr) = bus.pready {
+            let pr_e = m.sig_expr(pr);
+            m.logic_and(xfer, pr_e)
+        } else {
+            xfer
+        };
+        m.logic_and(xfer, wr_b)
+    } else {
+        wr_b
+    }
+}
+
 fn rd_active_expr(m: &mut Module, bus: &ResolvedBus) -> ExprId {
     let wr = m.sig_expr(bus.wr_en);
     let not_wr = m.logic_not(wr);
-    if let Some(rd) = bus.rd_en {
+    if bus.protocol == RegProtocol::Apb {
+        let ps = m.sig_expr(bus.psel.unwrap());
+        let pe = m.sig_expr(bus.penable.unwrap());
+        let xfer = m.logic_and(ps, pe);
+        let xfer = if let Some(pr) = bus.pready {
+            let pr_e = m.sig_expr(pr);
+            m.logic_and(xfer, pr_e)
+        } else {
+            xfer
+        };
+        m.logic_and(xfer, not_wr)
+    } else if let Some(rd) = bus.rd_en {
         let r = m.sig_expr(rd);
         m.logic_and(r, not_wr)
     } else {
@@ -669,6 +771,25 @@ fn add_delay_reg(m: &mut Module, name: &str, expr: ExprId, init_zero: bool) -> E
     m.sig_expr(sid)
 }
 
+/// Apply optional 1-cycle read latency alignment to `(en, expected)` before comparing against `rdata_w`.
+fn align_read_check(
+    m: &mut Module,
+    bus: &ResolvedBus,
+    not_rst: ExprId,
+    en: ExprId,
+    expected: ExprId,
+    tag: &str,
+) -> (ExprId, ExprId) {
+    if bus.read_latency == 0 {
+        (en, expected)
+    } else {
+        let en_d = add_delay_reg(m, &format!("$reg_rden_d_{tag}"), en, true);
+        let exp_d = add_delay_reg(m, &format!("$reg_exp_d_{tag}"), expected, false);
+        let en_final = m.logic_and(en_d, not_rst);
+        (en_final, exp_d)
+    }
+}
+
 fn check_reset_value(
     base: &Module,
     bus: &ResolvedBus,
@@ -679,31 +800,45 @@ fn check_reset_value(
 ) -> Result<RegCheckStatus> {
     let mut m = base.clone();
     m.properties.retain(|p| p.kind == PropertyKind::Assume);
+    add_protocol_assumptions(&mut m, bus);
 
     let rst = rst_active_expr(&mut m, bus);
-    let prev_rst = add_delay_reg(&mut m, "$reg_prev_rst", rst, true);
     let not_rst = m.logic_not(rst);
+    let wr = wr_active_expr(&mut m, bus);
+    let not_wr = m.logic_not(wr);
     let rd = rd_active_expr(&mut m, bus);
+
+    let prev_rst = add_delay_reg(&mut m, "$reg_prev_rst", rst, true);
+    // Allow 1 non-write Setup cycle after reset in APB mode.
+    let rst_ready = if bus.protocol == RegProtocol::Apb {
+        let quiet_after_rst = m.logic_and(prev_rst, not_rst);
+        let quiet_after_rst = m.logic_and(quiet_after_rst, not_wr);
+        let prev2_rst = add_delay_reg(&mut m, "$reg_prev2_rst", quiet_after_rst, true);
+        m.logic_or(prev_rst, prev2_rst)
+    } else {
+        prev_rst
+    };
 
     let addr_e = m.sig_expr(bus.addr);
     let addr_w = m.width(addr_e);
     let target_addr = m.c_u64(addr_w, spec.addr);
     let addr_hit = m.eq(addr_e, target_addr, false);
 
-    let en1 = m.logic_and(prev_rst, not_rst);
+    let en1 = m.logic_and(rst_ready, not_rst);
     let en2 = m.logic_and(en1, rd);
     let en = m.logic_and(en2, addr_hit);
 
     let rdata = m.sig_expr(bus.rdata);
     let rdata_resized = m.resize(rdata, spec.width, false);
     let expected = m.c_u64(spec.width, spec.reset);
-    let cond = m.eq(rdata_resized, expected, false);
+    let (en_aligned, exp_aligned) = align_read_check(&mut m, bus, not_rst, en, expected, "rst");
+    let cond = m.eq(rdata_resized, exp_aligned, false);
 
     m.properties.push(Property {
         name: format!("reg_reset_{}", spec.name),
         kind: PropertyKind::Assert,
         cond,
-        en,
+        en: en_aligned,
         source: None,
     });
     vf_ir::passes::coi_prune(&mut m);
@@ -720,11 +855,12 @@ fn check_access_policy(
 ) -> Result<RegCheckStatus> {
     let mut m = base.clone();
     m.properties.retain(|p| p.kind == PropertyKind::Assume);
+    add_protocol_assumptions(&mut m, bus);
 
     let rst = rst_active_expr(&mut m, bus);
     let not_rst = m.logic_not(rst);
-    let wr = m.sig_expr(bus.wr_en);
-    let wr_b = m.to_bool(wr);
+    let wr_b = wr_active_expr(&mut m, bus);
+    let not_wr = m.logic_not(wr_b);
     let rd = rd_active_expr(&mut m, bus);
 
     let addr_e = m.sig_expr(bus.addr);
@@ -738,31 +874,23 @@ fn check_access_policy(
     let wdata_w = m.resize(wdata, spec.width, false);
 
     if spec.access == AccessPolicy::Wo {
-        // Write-Only: reading `R.addr` outside reset must always return `spec.reset` (typically 0).
         let en1 = m.logic_and(not_rst, rd);
         let en = m.logic_and(en1, addr_hit);
         let expected = m.c_u64(spec.width, spec.reset);
-        let cond = m.eq(rdata_w, expected, false);
+        let (en_aligned, exp_aligned) = align_read_check(&mut m, bus, not_rst, en, expected, "wo");
+        let cond = m.eq(rdata_w, exp_aligned, false);
         m.properties.push(Property {
             name: format!("reg_wo_{}", spec.name),
             kind: PropertyKind::Assert,
             cond,
-            en,
+            en: en_aligned,
             source: None,
         });
         vf_ir::passes::coi_prune(&mut m);
         return prove_reg_prop(&m, depth, solver, use_pdr);
     }
 
-    // Track: at cycle t-1 we performed a write to `R.addr` (while `!rst`), with pre-write `rdata_w` and `wdata_w`.
-    let wr_hit_1 = m.logic_and(not_rst, wr_b);
-    let wr_hit = m.logic_and(wr_hit_1, addr_hit);
-
-    let prev_wr_hit = add_delay_reg(&mut m, "$reg_prev_wr_hit", wr_hit, true);
-    let prev_wdata = add_delay_reg(&mut m, "$reg_prev_wdata", wdata_w, false);
-    let prev_rdata = add_delay_reg(&mut m, "$reg_prev_rdata", rdata_w, false);
-
-    // Require that reset has happened at least once before verifying reserved bits / post-reset state.
+    // Track whether reset has happened at least once before verifying reserved bits.
     let had_rst = m.add_signal("$reg_had_rst", 1, false, SignalKind::Reg);
     m.signal_mut(had_rst).init = Some(ConstBits::zero(1));
     let had_rst_e = m.sig_expr(had_rst);
@@ -775,19 +903,105 @@ fn check_access_policy(
         async_reset: None,
     });
 
-    let en1 = m.logic_and(prev_wr_hit, not_rst);
-    let en2 = m.logic_and(en1, rd);
-    let en3 = m.logic_and(en2, addr_hit);
-    let en = m.logic_and(en3, had_rst_e);
-
     let mask_c = m.c_u64(spec.width, spec.mask);
     let res_val_c = m.c_u64(spec.width, spec.reset & !spec.mask);
 
+    let wr_hit_1 = m.logic_and(not_rst, wr_b);
+    let wr_hit = m.logic_and(wr_hit_1, addr_hit);
+    let rd_hit_1 = m.logic_and(not_rst, rd);
+    let rd_hit = m.logic_and(rd_hit_1, addr_hit);
+
+    // For RW, pre-write rdata is not needed; check Write -> [optional Setup] -> Read!
+    if spec.access == AccessPolicy::Rw {
+        let prev_wr_hit = add_delay_reg(&mut m, "$reg_prev_wr_hit", wr_hit, true);
+        let prev_wdata = add_delay_reg(&mut m, "$reg_prev_wdata", wdata_w, false);
+
+        let (armed, eff_wdata) = if bus.protocol == RegProtocol::Apb {
+            // Allow 1 idle/Setup cycle between APB Write Access and APB Read Access.
+            let q = m.logic_and(prev_wr_hit, not_rst);
+            let q = m.logic_and(q, not_wr);
+            let prev2_wr_hit = add_delay_reg(&mut m, "$reg_prev2_wr_hit", q, true);
+            let prev2_wdata = add_delay_reg(&mut m, "$reg_prev2_wdata", prev_wdata, false);
+            let armed = m.logic_or(prev_wr_hit, prev2_wr_hit);
+            let wsel = m.mux(prev_wr_hit, prev_wdata, prev2_wdata);
+            (armed, wsel)
+        } else {
+            (prev_wr_hit, prev_wdata)
+        };
+
+        let en1 = m.logic_and(armed, rd_hit);
+        let en = m.logic_and(en1, had_rst_e);
+
+        let masked_w = m.intern(spec.width, ExprKind::And(eff_wdata, mask_c));
+        let expected = m.intern(spec.width, ExprKind::Or(masked_w, res_val_c));
+        let (en_aligned, exp_aligned) = align_read_check(&mut m, bus, not_rst, en, expected, "rw");
+        let cond = m.eq(rdata_w, exp_aligned, false);
+
+        m.properties.push(Property {
+            name: format!("reg_access_{}", spec.name),
+            kind: PropertyKind::Assert,
+            cond,
+            en: en_aligned,
+            source: None,
+        });
+        vf_ir::passes::coi_prune(&mut m);
+        return prove_reg_prop(&m, depth, solver, use_pdr);
+    }
+
+    // For RO, W1C, W1S:
+    // - On Raw with read_latency == 0: combinational read mux exposes pre-write value on the write cycle.
+    // - On APB or read_latency == 1: use explicit Read -> [Setup] -> Write -> [Setup] -> Read sequence!
+    let (en, prev_rdata, prev_wdata) = if bus.protocol == RegProtocol::Raw && bus.read_latency == 0
+    {
+        let prev_wr_hit = add_delay_reg(&mut m, "$reg_prev_wr_hit", wr_hit, true);
+        let prev_wdata = add_delay_reg(&mut m, "$reg_prev_wdata", wdata_w, false);
+        let prev_rdata = add_delay_reg(&mut m, "$reg_prev_rdata", rdata_w, false);
+        let en1 = m.logic_and(prev_wr_hit, rd_hit);
+        let en = m.logic_and(en1, had_rst_e);
+        (en, prev_rdata, prev_wdata)
+    } else if bus.protocol == RegProtocol::Apb {
+        // APB Read Access -> 1 Setup cycle -> Write Access -> 1 Setup cycle -> Read Access
+        let r1 = add_delay_reg(&mut m, "$apb_r1", rd_hit, true);
+        let s1 = add_delay_reg(&mut m, "$apb_s1", rdata_w, false);
+        let q1 = m.logic_and(r1, not_rst);
+        let q1 = m.logic_and(q1, not_wr);
+        let r2 = add_delay_reg(&mut m, "$apb_r2", q1, true);
+        let s2 = add_delay_reg(&mut m, "$apb_s2", s1, false);
+
+        let pre_ok = m.logic_or(r1, r2);
+        let pre_val = m.mux(r1, s1, s2);
+
+        let w_step = m.logic_and(pre_ok, wr_hit);
+        let w1 = add_delay_reg(&mut m, "$apb_w1", w_step, true);
+        let ws1 = add_delay_reg(&mut m, "$apb_ws1", pre_val, false);
+        let wd1 = add_delay_reg(&mut m, "$apb_wd1", wdata_w, false);
+
+        let q2 = m.logic_and(w1, not_rst);
+        let q2 = m.logic_and(q2, not_wr);
+        let w2 = add_delay_reg(&mut m, "$apb_w2", q2, true);
+        let ws2 = add_delay_reg(&mut m, "$apb_ws2", ws1, false);
+        let wd2 = add_delay_reg(&mut m, "$apb_wd2", wd1, false);
+
+        let post_ok = m.logic_or(w1, w2);
+        let snap_pre = m.mux(w1, ws1, ws2);
+        let snap_wd = m.mux(w1, wd1, wd2);
+        let en1 = m.logic_and(post_ok, rd_hit);
+        let en = m.logic_and(en1, had_rst_e);
+        (en, snap_pre, snap_wd)
+    } else {
+        // Raw with read_latency == 1:
+        // t-3: rd_hit -> t-2: wr_hit & capture rdata_w (result of t-3 read!) -> t-1: rd_hit -> t: check rdata_w
+        let r1 = add_delay_reg(&mut m, "$rl_r1", rd_hit, true);
+        let w_step = m.logic_and(r1, wr_hit);
+        let w1 = add_delay_reg(&mut m, "$rl_w1", w_step, true);
+        let snap_pre = add_delay_reg(&mut m, "$rl_pre", rdata_w, false);
+        let snap_wd = add_delay_reg(&mut m, "$rl_wd", wdata_w, false);
+        let en1 = m.logic_and(w1, rd_hit);
+        let en = m.logic_and(en1, had_rst_e);
+        (en, snap_pre, snap_wd)
+    };
+
     let expected = match spec.access {
-        AccessPolicy::Rw => {
-            let masked_w = m.intern(spec.width, ExprKind::And(prev_wdata, mask_c));
-            m.intern(spec.width, ExprKind::Or(masked_w, res_val_c))
-        }
         AccessPolicy::Ro => prev_rdata,
         AccessPolicy::W1c => {
             let inv_w = m.not(prev_wdata);
@@ -800,15 +1014,16 @@ fn check_access_policy(
             let masked = m.intern(spec.width, ExprKind::And(set_bits, mask_c));
             m.intern(spec.width, ExprKind::Or(masked, res_val_c))
         }
-        AccessPolicy::Wo => unreachable!(),
+        AccessPolicy::Rw | AccessPolicy::Wo => unreachable!(),
     };
 
-    let cond = m.eq(rdata_w, expected, false);
+    let (en_aligned, exp_aligned) = align_read_check(&mut m, bus, not_rst, en, expected, "acc");
+    let cond = m.eq(rdata_w, exp_aligned, false);
     m.properties.push(Property {
         name: format!("reg_access_{}", spec.name),
         kind: PropertyKind::Assert,
         cond,
-        en,
+        en: en_aligned,
         source: None,
     });
     vf_ir::passes::coi_prune(&mut m);
@@ -825,11 +1040,12 @@ fn check_no_aliasing(
 ) -> Result<RegCheckStatus> {
     let mut m = base.clone();
     m.properties.retain(|p| p.kind == PropertyKind::Assume);
+    add_protocol_assumptions(&mut m, bus);
 
     let rst = rst_active_expr(&mut m, bus);
     let not_rst = m.logic_not(rst);
-    let wr = m.sig_expr(bus.wr_en);
-    let wr_b = m.to_bool(wr);
+    let wr_b = wr_active_expr(&mut m, bus);
+    let not_wr = m.logic_not(wr_b);
     let rd = rd_active_expr(&mut m, bus);
 
     let addr_e = m.sig_expr(bus.addr);
@@ -841,28 +1057,59 @@ fn check_no_aliasing(
     let rdata = m.sig_expr(bus.rdata);
     let rdata_w = m.resize(rdata, spec.width, false);
 
-    // Cycle t-2: read `R.addr` (while `!rst`) -> snapshot `snap_val`.
     let rd_hit_1 = m.logic_and(not_rst, rd);
     let rd_hit = m.logic_and(rd_hit_1, addr_hit);
-    let armed1 = add_delay_reg(&mut m, "$alias_armed1", rd_hit, true);
-    let snap1 = add_delay_reg(&mut m, "$alias_snap1", rdata_w, false);
-
-    // Cycle t-1: write to OTHER address (`addr != R.addr`) while `!rst`.
     let other_wr_1 = m.logic_and(not_rst, wr_b);
-    let other_wr_2 = m.logic_and(other_wr_1, addr_other);
-    let step2 = m.logic_and(armed1, other_wr_2);
-    let armed2 = add_delay_reg(&mut m, "$alias_armed2", step2, true);
-    let snap2 = add_delay_reg(&mut m, "$alias_snap2", snap1, false);
+    let other_wr = m.logic_and(other_wr_1, addr_other);
 
-    // Cycle t: read `R.addr` again while `!rst` -> must still equal `snap2`!
-    let en = m.logic_and(armed2, rd_hit);
-    let cond = m.eq(rdata_w, snap2, false);
+    let (en, snap_expected) = if bus.protocol == RegProtocol::Raw && bus.read_latency == 0 {
+        let armed1 = add_delay_reg(&mut m, "$alias_armed1", rd_hit, true);
+        let snap1 = add_delay_reg(&mut m, "$alias_snap1", rdata_w, false);
+        let step2 = m.logic_and(armed1, other_wr);
+        let armed2 = add_delay_reg(&mut m, "$alias_armed2", step2, true);
+        let snap2 = add_delay_reg(&mut m, "$alias_snap2", snap1, false);
+        let en = m.logic_and(armed2, rd_hit);
+        (en, snap2)
+    } else if bus.protocol == RegProtocol::Apb {
+        let r1 = add_delay_reg(&mut m, "$alias_r1", rd_hit, true);
+        let s1 = add_delay_reg(&mut m, "$alias_s1", rdata_w, false);
+        let q1 = m.logic_and(r1, not_rst);
+        let q1 = m.logic_and(q1, not_wr);
+        let r2 = add_delay_reg(&mut m, "$alias_r2", q1, true);
+        let s2 = add_delay_reg(&mut m, "$alias_s2", s1, false);
+        let pre_ok = m.logic_or(r1, r2);
+        let pre_val = m.mux(r1, s1, s2);
+
+        let step2 = m.logic_and(pre_ok, other_wr);
+        let w1 = add_delay_reg(&mut m, "$alias_w1", step2, true);
+        let ws1 = add_delay_reg(&mut m, "$alias_ws1", pre_val, false);
+        let q2 = m.logic_and(w1, not_rst);
+        let q2 = m.logic_and(q2, not_wr);
+        let w2 = add_delay_reg(&mut m, "$alias_w2", q2, true);
+        let ws2 = add_delay_reg(&mut m, "$alias_ws2", ws1, false);
+        let post_ok = m.logic_or(w1, w2);
+        let snap = m.mux(w1, ws1, ws2);
+        let en = m.logic_and(post_ok, rd_hit);
+        (en, snap)
+    } else {
+        // Raw with read_latency == 1
+        let r1 = add_delay_reg(&mut m, "$alias_rl_r1", rd_hit, true);
+        let step2 = m.logic_and(r1, other_wr);
+        let w1 = add_delay_reg(&mut m, "$alias_rl_w1", step2, true);
+        let snap = add_delay_reg(&mut m, "$alias_rl_snap", rdata_w, false);
+        let en = m.logic_and(w1, rd_hit);
+        (en, snap)
+    };
+
+    let (en_aligned, exp_aligned) =
+        align_read_check(&mut m, bus, not_rst, en, snap_expected, "alias");
+    let cond = m.eq(rdata_w, exp_aligned, false);
 
     m.properties.push(Property {
         name: format!("reg_no_alias_{}", spec.name),
         kind: PropertyKind::Assert,
         cond,
-        en,
+        en: en_aligned,
         source: None,
     });
     vf_ir::passes::coi_prune(&mut m);

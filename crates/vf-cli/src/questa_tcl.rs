@@ -5,10 +5,15 @@ use std::path::{Path, PathBuf};
 use vf_apps::autocheck::{run_autocheck, AutoCheckConfig, CheckStatus};
 use vf_apps::cdc::{parse_sdc_file, run_cdc_analysis, CdcConfig, CdcSeverity, GrayStatus};
 use vf_apps::covercheck::{run_covercheck, CoverCheckConfig, CoverageStatus};
-use vf_apps::regcheck::{parse_regmap_auto, run_regcheck, RegBusConfig, RegCheckStatus};
+use vf_apps::fault::{run_fault_analysis, FaultConfig, FaultStatus};
+use vf_apps::power::{parse_upf_file, run_powercheck, PowerCheckConfig, PowerStatus};
+use vf_apps::regcheck::{
+    parse_regmap_auto, run_regcheck, RegBusConfig, RegCheckStatus, RegProtocol,
+};
 use vf_apps::xcheck::{run_xcheck, XCheckConfig, XStatus};
 use vf_dsl::{lower_contract_to_ir, parse_contract, ContractRole};
-use vf_engine::equiv::{check_slec, SlecConfig};
+use vf_engine::deadend::{check_deadends, DeadEndConfig, DeadEndOutcome};
+use vf_engine::equiv::{check_slec, parse_reset_spec, SlecConfig};
 use vf_engine::kind::{run_kinduction, ProveConfig, ProveOutcome};
 use vf_engine::pdr::{run_pdr, PdrConfig};
 use vf_ir::passes::{async2sync, clk2fflogic, has_multiple_clocks};
@@ -309,6 +314,11 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                 if toks.get(1).map(String::as_str) == Some("verify") {
                     let spec_p = flag_str(&toks, "-spec")
                         .ok_or_else(|| anyhow!("line {}: `regcheck verify` requires `-spec <file>`", line_no + 1))?;
+                    let proto = flag_str(&toks, "-protocol")
+                        .map(RegProtocol::parse)
+                        .transpose()?
+                        .unwrap_or_default();
+                    let read_latency = flag_usize(&toks, "-read_latency").unwrap_or(0);
                     let specs = parse_regmap_auto(&resolve(spec_p))?;
                     let m = prepare(compile_raw(&files, &top)?);
                     report.module_name = m.name.clone();
@@ -316,6 +326,8 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                         &m,
                         &specs,
                         &RegBusConfig {
+                            protocol: proto,
+                            read_latency,
                             rst: reset_sig.clone(),
                             rst_active_low: reset_active_low,
                             depth: 10,
@@ -352,6 +364,10 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                         .ok_or_else(|| anyhow!("line {}: `slec verify` requires `-gate <file>`", line_no + 1))?;
                     let lat_gold = flag_usize(&toks, "-latency_gold").unwrap_or(0);
                     let lat_gate = flag_usize(&toks, "-latency_gate").unwrap_or(0);
+                    let reset = flag_str(&toks, "-reset").map(parse_reset_spec).transpose()?;
+                    let reset_cycles = flag_usize(&toks, "-reset_cycles").unwrap_or(1);
+                    let ignore_outputs = flag_all(&toks, "-ignore_output");
+                    let valid_cond = flag_str(&toks, "-valid_cond").map(String::from);
                     let gold = prepare(compile_to_ir(&CompileOptions::for_files(vec![resolve(gold_p)]))?);
                     let gate = prepare(compile_to_ir(&CompileOptions::for_files(vec![resolve(gate_p)]))?);
                     report.module_name = format!("{} vs {}", gold.name, gate.name);
@@ -361,10 +377,106 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                         &SlecConfig {
                             latency_gold: lat_gold,
                             latency_gate: lat_gate,
+                            reset,
+                            reset_cycles,
+                            ignore_outputs,
+                            valid_cond,
                             ..Default::default()
                         },
                     )?;
                     push_prove_outcome(&mut report, "slec_equiv", "slec", outcome);
+                }
+            }
+            "fault" => {
+                if toks.get(1).map(String::as_str) == Some("verify") {
+                    let targets = flag_all(&toks, "-target");
+                    let outputs = flag_all(&toks, "-output");
+                    let alarm = flag_str(&toks, "-alarm").map(String::from);
+                    let depth = flag_usize(&toks, "-depth").unwrap_or(12);
+                    let m = prepare(compile_raw(&files, &top)?);
+                    report.module_name = m.name.clone();
+                    let frep = run_fault_analysis(
+                        &m,
+                        &FaultConfig {
+                            targets,
+                            outputs,
+                            alarm,
+                            depth,
+                            ..Default::default()
+                        },
+                    )?;
+                    for f in frep.findings {
+                        let fname = format!("{}[{}]/{}", f.signal, f.bit, f.model.as_str());
+                        let (status, detail, trace) = match f.status {
+                            FaultStatus::SafeMasked => ("SAFE/MASKED".into(), "masked".into(), None),
+                            FaultStatus::Detected => ("DETECTED".into(), "covered by alarm".into(), None),
+                            FaultStatus::DangerousSpf { step, trace } => {
+                                ("SPF".into(), format!("dangerous SPF at cycle {step}"), Some(trace))
+                            }
+                            FaultStatus::Unknown => ("UNKNOWN".into(), "inconclusive".into(), None),
+                        };
+                        report.items.push(ReportItem {
+                            name: fname,
+                            category: "fault".into(),
+                            status,
+                            engine: "fault-miter".into(),
+                            detail,
+                            source: None,
+                            trace,
+                        });
+                    }
+                }
+            }
+            "powercheck" => {
+                if toks.get(1).map(String::as_str) == Some("verify") {
+                    let upf_p = flag_str(&toks, "-upf")
+                        .ok_or_else(|| anyhow!("line {}: `powercheck verify` requires `-upf <file>`", line_no + 1))?;
+                    let upf_spec = parse_upf_file(&resolve(upf_p))?;
+                    let m = prepare(compile_raw(&files, &top)?);
+                    report.module_name = m.name.clone();
+                    let findings = run_powercheck(&m, &upf_spec, &PowerCheckConfig::default())?;
+                    for f in findings {
+                        let (status, detail, trace) = match f.status {
+                            PowerStatus::Pass => ("PASS".into(), format!("{} proved", f.check), None),
+                            PowerStatus::Fail { step, trace } => {
+                                ("FAIL".into(), format!("{} violated at cycle {step}", f.check), Some(trace))
+                            }
+                            PowerStatus::StructuralViolation(msg) => ("VIOLATION".into(), msg, None),
+                            PowerStatus::Unknown => ("UNKNOWN".into(), "inconclusive".into(), None),
+                        };
+                        report.items.push(ReportItem {
+                            name: format!("{}.{}", f.domain, f.signal),
+                            category: "powercheck".into(),
+                            status,
+                            engine: "powercheck".into(),
+                            detail,
+                            source: None,
+                            trace,
+                        });
+                    }
+                }
+            }
+            "deadend" => {
+                if toks.get(1).map(String::as_str) == Some("verify") {
+                    let depth = flag_usize(&toks, "-depth").unwrap_or(15);
+                    let m = prepare(compile_raw(&files, &top)?);
+                    report.module_name = m.name.clone();
+                    let (status, detail, trace) = match check_deadends(&m, &DeadEndConfig { depth, solver: "z3".into() })? {
+                        DeadEndOutcome::NoAssumptions => ("CLEAN".into(), "no assumptions".into(), None),
+                        DeadEndOutcome::Clean { depth } => ("CLEAN".into(), format!("no dead-end up to {depth}"), None),
+                        DeadEndOutcome::InitialUnsat => ("DEAD-END".into(), "initial state UNSAT".into(), None),
+                        DeadEndOutcome::DeadEndFound { step, trace } => ("DEAD-END".into(), format!("dead-end at cycle {step}"), Some(trace)),
+                        DeadEndOutcome::Unknown { step } => ("UNKNOWN".into(), format!("unknown at {step}"), None),
+                    };
+                    report.items.push(ReportItem {
+                        name: "assumption_deadend".into(),
+                        category: "deadend".into(),
+                        status,
+                        engine: "deadend".into(),
+                        detail,
+                        source: None,
+                        trace,
+                    });
                 }
             }
             "exit" | "quit" => break,

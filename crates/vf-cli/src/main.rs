@@ -15,17 +15,23 @@ use vf_apps::autocheck::{run_autocheck, AutoCheckConfig, CheckStatus};
 use vf_apps::cdc::{parse_sdc_file, run_cdc_analysis, CdcConfig, CdcSeverity, GrayStatus};
 use vf_apps::connectivity::{parse_connectivity_csv, run_connectivity, ConnStatus};
 use vf_apps::covercheck::{run_covercheck, CoverCheckConfig, CoverageStatus};
-use vf_apps::regcheck::{parse_regmap_auto, run_regcheck, RegBusConfig, RegCheckStatus};
+use vf_apps::fault::{run_fault_analysis, FaultConfig, FaultModel, FaultStatus};
+use vf_apps::power::{parse_upf_file, run_powercheck, PowerCheckConfig, PowerStatus};
+use vf_apps::regcheck::{
+    parse_regmap_auto, run_regcheck, RegBusConfig, RegCheckStatus, RegProtocol,
+};
 use vf_apps::secure::{run_secure_check, SecureConfig, SecureOutcome};
 use vf_apps::xcheck::{run_xcheck, XCheckConfig, XStatus};
 use vf_dsl::{emit_sva, format_contract, lower_contract_to_ir, parse_contract, ContractRole};
+use vf_engine::backtrace::compute_cex_backtrace;
 use vf_engine::bmc::{run_bmc, BmcConfig, BmcOutcome};
 use vf_engine::cert::ProofCertificate;
 use vf_engine::cover::{run_cover, CoverConfig};
 use vf_engine::coverage::{
     compute_proof_core, run_mutation_analysis, MutantStatus, MutationConfig,
 };
-use vf_engine::equiv::{check_slec, SlecConfig};
+use vf_engine::deadend::{check_deadends, DeadEndConfig, DeadEndOutcome};
+use vf_engine::equiv::{check_slec, parse_reset_spec, SlecConfig};
 use vf_engine::kind::{run_kinduction, ProveConfig, ProveOutcome};
 use vf_engine::live::{run_live, LiveConfig, LiveOutcome};
 use vf_engine::pdr::{run_pdr, PdrConfig};
@@ -189,7 +195,7 @@ enum Commands {
         #[arg(long)]
         vcd_dir: Option<PathBuf>,
     },
-    /// Sequential/Combinational Logic Equivalence Checking (Questa SLEC: latency offsets, skip cycles, k-ind & PDR)
+    /// Sequential/Combinational Logic Equivalence Checking (Questa SLEC: latency offsets, reset seq, LPGC valid-cond, safety-insertion output filter, k-ind & PDR)
     Equiv {
         /// Reference (gold) Verilog/SV file(s)
         #[arg(long, required = true)]
@@ -215,6 +221,21 @@ enum Commands {
         /// Initial settling cycles to mask comparison
         #[arg(long, default_value_t = 0)]
         skip_cycles: usize,
+        /// Reset initialization sequence (e.g. `rst=1` or `rst_n=0`)
+        #[arg(long)]
+        reset: Option<String>,
+        /// Number of initial cycles to hold `--reset` active
+        #[arg(long, default_value_t = 1)]
+        reset_cycles: usize,
+        /// Restrict comparison to specific output port(s)
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Exclude output port(s) from comparison (e.g. TMR/ECC `err_flag`)
+        #[arg(long = "ignore-output")]
+        ignore_outputs: Vec<String>,
+        /// Low-Power Clock Gating (LPGC) / observability condition (compare only when true)
+        #[arg(long)]
+        valid_cond: Option<String>,
         /// Maximum k-induction depth
         #[arg(long, default_value_t = 20)]
         depth: usize,
@@ -236,7 +257,21 @@ enum Commands {
         #[arg(long, default_value = "z3")]
         solver: String,
     },
-    /// Questa AutoCheck: push-button formal RTL bug hunting (OOB memory, div-by-zero, unique/priority, overflow, FSM deadlock)
+    /// Questa PropCheck dead-end detector: detect over-constrained assumptions causing reachable dead-end states
+    Deadend {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Maximum search depth (cycles)
+        #[arg(long, default_value_t = 15)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Write VCD trace leading into the dead-end state
+        #[arg(long)]
+        vcd: Option<PathBuf>,
+    },
+    /// Questa AutoCheck: push-button formal RTL bug hunting (OOB memory, div-by-zero, shift-overflow, unique/priority, overflow, FSM deadlock/livelock/unreachable, clock-as-data)
     Autocheck {
         #[command(flatten)]
         src: SourceArgs,
@@ -246,7 +281,10 @@ enum Commands {
         /// Enable unsigned arithmetic overflow/underflow checks
         #[arg(long)]
         check_overflow: bool,
-        /// FSM state register name(s) to check for deadlock states
+        /// Check for initialized registers provably stuck constant forever
+        #[arg(long)]
+        check_const_regs: bool,
+        /// FSM state register name(s) to check for deadlock, livelock, and unreachable states
         #[arg(long = "fsm")]
         fsm_signals: Vec<String>,
         /// SMT solver executable
@@ -330,13 +368,19 @@ enum Commands {
         #[arg(long)]
         vcd_dir: Option<PathBuf>,
     },
-    /// Questa Register Check: verify CSR reset values, RW/RO/W1C/W1S/WO policies, masks & non-aliasing (CSV, SystemRDL .rdl, or IP-XACT .xml)
+    /// Questa Register Check: verify CSR reset values, RW/RO/W1C/W1S/WO policies, masks & non-aliasing (CSV, SystemRDL .rdl, or IP-XACT .xml; Raw or AMBA APB)
     Regcheck {
         #[command(flatten)]
         src: SourceArgs,
         /// Register specification file (`.csv`, SystemRDL `.rdl`, or IP-XACT `.xml`)
         #[arg(long)]
         spec: PathBuf,
+        /// CSR bus protocol: raw or apb (AMBA APB3/APB4)
+        #[arg(long, default_value = "raw")]
+        protocol: String,
+        /// Read data latency in clock cycles (0 = combinational read, 1 = registered read)
+        #[arg(long, default_value_t = 0)]
+        read_latency: usize,
         /// Reset signal name (auto-detected if omitted)
         #[arg(long)]
         rst: Option<String>,
@@ -358,6 +402,15 @@ enum Commands {
         /// Read data bus signal name
         #[arg(long)]
         rdata: Option<String>,
+        /// APB PSEL signal name (when `--protocol apb`)
+        #[arg(long)]
+        psel: Option<String>,
+        /// APB PENABLE signal name (when `--protocol apb`)
+        #[arg(long)]
+        penable: Option<String>,
+        /// Optional APB PREADY signal name (when `--protocol apb`)
+        #[arg(long)]
+        pready: Option<String>,
         /// Maximum k-induction depth
         #[arg(long, default_value_t = 10)]
         depth: usize,
@@ -381,6 +434,64 @@ enum Commands {
         /// SMT solver executable
         #[arg(long, default_value = "z3")]
         solver: String,
+    },
+    /// Questa Analyze Fault / ISO 26262 Functional Safety: formal SA0/SA1/SEU fault injection, SPFM & Diagnostic Coverage
+    Fault {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Target register/signal name(s) for fault injection (defaults to all user FFs)
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        /// Safety-critical output port(s) to observe (defaults to all outputs except `--alarm`)
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Safety-mechanism error/alarm output signal (e.g. TMR/ECC/parity error flag)
+        #[arg(long)]
+        alarm: Option<String>,
+        /// Maximum cycles after output divergence within which `--alarm` must assert
+        #[arg(long, default_value_t = 0)]
+        detect_latency: usize,
+        /// Comma-separated fault models: sa0,sa1,seu
+        #[arg(long, default_value = "sa0,sa1,seu")]
+        models: String,
+        /// Initial settling cycles to mask before checking safety outputs
+        #[arg(long, default_value_t = 0)]
+        skip_cycles: usize,
+        /// Maximum number of fault sites to analyze
+        #[arg(long, default_value_t = 64)]
+        max_faults: usize,
+        /// Maximum k-induction depth
+        #[arg(long, default_value_t = 12)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Write Interactive HTML Sign-Off Dashboard (with FMEDA classification & waveforms)
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Output format: text, json, junit, or sarif
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Questa Low-Power / UPF: IEEE 1801 UPF power-domain isolation clamp & crossing verifier
+    Powercheck {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Path to IEEE 1801 UPF (`.upf`) power-intent specification
+        #[arg(long)]
+        upf: PathBuf,
+        /// Optional power-domain off signal mapping(s) (`DOMAIN=signal`) to verify power-down isolation sequencing
+        #[arg(long = "pd-off")]
+        pd_off: Vec<String>,
+        /// Maximum k-induction depth
+        #[arg(long, default_value_t = 15)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Directory in which to write VCD traces for failed clamp/sequencing checks
+        #[arg(long)]
+        vcd_dir: Option<PathBuf>,
     },
     /// Verify Verilog/SV RTL against a VeloFormal Contract DSL (`.vfc`) specification
     Contract {
@@ -570,6 +681,8 @@ fn run() -> Result<ExitCode> {
                     trace,
                 } => {
                     println!("FAIL — assertion `{property}` violated at cycle {step}");
+                    let bt = compute_cex_backtrace(&module, Some(&property), &trace);
+                    print!("{}", bt.format_text());
                     if let Some(path) = vcd_path {
                         fs::write(&path, vcd::write_vcd(&module, &trace))?;
                         println!("Counterexample VCD written to {}", path.display());
@@ -694,6 +807,8 @@ fn run() -> Result<ExitCode> {
                     trace,
                 } => {
                     println!("FAIL — assertion `{property}` violated at cycle {step}");
+                    let bt = compute_cex_backtrace(&module, Some(&property), &trace);
+                    print!("{}", bt.format_text());
                     if let Some(path) = vcd_path {
                         fs::write(&path, vcd::write_vcd(&module, &trace))?;
                         println!("Counterexample VCD written to {}", path.display());
@@ -793,6 +908,11 @@ fn run() -> Result<ExitCode> {
             latency_gold,
             latency_gate,
             skip_cycles,
+            reset,
+            reset_cycles,
+            outputs,
+            ignore_outputs,
+            valid_cond,
             depth,
             solver,
             vcd: vcd_path,
@@ -801,8 +921,15 @@ fn run() -> Result<ExitCode> {
             g_opts.top = gold_top;
             let mut t_opts = CompileOptions::for_files(gate);
             t_opts.top = gate_top;
-            let gold_mod = compile_to_ir(&g_opts)?;
-            let gate_mod = compile_to_ir(&t_opts)?;
+            let mut gold_mod = compile_to_ir(&g_opts)?;
+            let mut gate_mod = compile_to_ir(&t_opts)?;
+            if gold_mod.ffs.iter().any(|f| f.async_reset.is_some()) {
+                async2sync(&mut gold_mod);
+            }
+            if gate_mod.ffs.iter().any(|f| f.async_reset.is_some()) {
+                async2sync(&mut gate_mod);
+            }
+            let parsed_reset = reset.as_deref().map(parse_reset_spec).transpose()?;
             let (miter, outcome) = check_slec(
                 &gold_mod,
                 &gate_mod,
@@ -813,6 +940,11 @@ fn run() -> Result<ExitCode> {
                     latency_gold,
                     latency_gate,
                     skip_cycles,
+                    reset: parsed_reset,
+                    reset_cycles,
+                    outputs,
+                    ignore_outputs,
+                    valid_cond,
                 },
             )?;
             match outcome {
@@ -881,10 +1013,53 @@ fn run() -> Result<ExitCode> {
                 ExitCode::SUCCESS
             })
         }
+        Commands::Deadend {
+            src,
+            depth,
+            solver,
+            vcd: vcd_path,
+        } => {
+            let module = src.compile_and_prepare()?;
+            match check_deadends(&module, &DeadEndConfig { depth, solver })? {
+                DeadEndOutcome::NoAssumptions => {
+                    println!("CLEAN — design has no `assume` constraints");
+                    Ok(ExitCode::SUCCESS)
+                }
+                DeadEndOutcome::Clean { depth } => {
+                    println!(
+                        "CLEAN — no assumption dead-end state reachable within {depth} cycles"
+                    );
+                    Ok(ExitCode::SUCCESS)
+                }
+                DeadEndOutcome::InitialUnsat => {
+                    println!(
+                        "DEAD-END — assumptions are contradictory at cycle 0 (initial state UNSAT)"
+                    );
+                    Ok(ExitCode::from(1))
+                }
+                DeadEndOutcome::DeadEndFound { step, trace } => {
+                    println!(
+                        "DEAD-END — reachable over-constrained state at cycle {step} (no next-cycle input satisfies `assume`)"
+                    );
+                    let bt = compute_cex_backtrace(&module, None, &trace);
+                    print!("{}", bt.format_text());
+                    if let Some(path) = vcd_path {
+                        fs::write(&path, vcd::write_vcd(&module, &trace))?;
+                        println!("Dead-end trace VCD written to {}", path.display());
+                    }
+                    Ok(ExitCode::from(1))
+                }
+                DeadEndOutcome::Unknown { step } => {
+                    println!("UNKNOWN — solver returned unknown at cycle {step}");
+                    Ok(ExitCode::from(3))
+                }
+            }
+        }
         Commands::Autocheck {
             src,
             depth,
             check_overflow,
+            check_const_regs,
             fsm_signals,
             solver,
             vcd_dir,
@@ -895,6 +1070,7 @@ fn run() -> Result<ExitCode> {
                     depth,
                     solver,
                     check_overflow,
+                    check_const_regs,
                     fsm_signals,
                     use_pdr: true,
                 },
@@ -1109,6 +1285,8 @@ fn run() -> Result<ExitCode> {
         Commands::Regcheck {
             src,
             spec,
+            protocol,
+            read_latency,
             rst,
             rst_active_low,
             wr_en,
@@ -1116,15 +1294,21 @@ fn run() -> Result<ExitCode> {
             addr,
             wdata,
             rdata,
+            psel,
+            penable,
+            pready,
             depth,
             solver,
         } => {
             let module = src.compile_and_prepare()?;
             let specs = parse_regmap_auto(&spec)?;
+            let proto = RegProtocol::parse(&protocol)?;
             let findings = run_regcheck(
                 &module,
                 &specs,
                 &RegBusConfig {
+                    protocol: proto,
+                    read_latency,
                     rst,
                     rst_active_low,
                     wr_en,
@@ -1132,6 +1316,9 @@ fn run() -> Result<ExitCode> {
                     addr,
                     wdata,
                     rdata,
+                    psel,
+                    penable,
+                    pready,
                     depth,
                     solver,
                     use_pdr: true,
@@ -1157,6 +1344,172 @@ fn run() -> Result<ExitCode> {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
+            })
+        }
+        Commands::Fault {
+            src,
+            targets,
+            outputs,
+            alarm,
+            detect_latency,
+            models,
+            skip_cycles,
+            max_faults,
+            depth,
+            solver,
+            report: report_path,
+            format,
+        } => {
+            let module = src.compile_and_prepare()?;
+            let parsed_models: Vec<FaultModel> = models
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(FaultModel::parse)
+                .collect::<Result<_>>()?;
+            let frep = run_fault_analysis(
+                &module,
+                &FaultConfig {
+                    targets,
+                    outputs,
+                    alarm,
+                    detect_latency,
+                    models: parsed_models,
+                    skip_cycles,
+                    max_faults,
+                    depth,
+                    solver,
+                    use_pdr: true,
+                },
+            )?;
+            let mut signoff = SignOffReport::new("ISO 26262 Formal Fault Analysis", &module.name);
+            for f in &frep.findings {
+                let fname = format!("{}[{}]/{}", f.signal, f.bit, f.model.as_str());
+                let (status, detail, trace) = match &f.status {
+                    FaultStatus::SafeMasked => (
+                        "SAFE/MASKED",
+                        "fault is formally masked (cannot corrupt safety outputs)".to_string(),
+                        None,
+                    ),
+                    FaultStatus::Detected => (
+                        "DETECTED",
+                        "propagatable fault formally covered by safety mechanism alarm".to_string(),
+                        None,
+                    ),
+                    FaultStatus::DangerousSpf { step, trace } => (
+                        "SPF",
+                        format!("DANGEROUS Single-Point Fault corrupted safety output at cycle {step} without alarm"),
+                        Some(trace.clone()),
+                    ),
+                    FaultStatus::Unknown => (
+                        "UNKNOWN",
+                        "solver inconclusive within configured depth".to_string(),
+                        None,
+                    ),
+                };
+                if format == "text" {
+                    println!("{status:<11} {fname} — {detail}");
+                }
+                signoff.items.push(ReportItem {
+                    name: fname,
+                    category: format!("fault_{}", f.model.as_str()),
+                    status: status.into(),
+                    engine: "fault-miter".into(),
+                    detail,
+                    source: None,
+                    trace,
+                });
+            }
+            if let Some(rp) = report_path {
+                fs::write(&rp, signoff.to_html())?;
+                eprintln!("HTML FMEDA sign-off dashboard written to {}", rp.display());
+            }
+            match format.as_str() {
+                "json" => println!("{}", signoff.to_json()),
+                "junit" => println!("{}", signoff.to_junit_xml()),
+                "sarif" => println!("{}", signoff.to_sarif()),
+                _ => {
+                    println!(
+                        "SUMMARY — total={} safe/masked={} detected={} dangerous_spf={} unknown={} | DC={:.1}% SPFM={:.1}%",
+                        frep.total_faults,
+                        frep.safe_masked,
+                        frep.detected,
+                        frep.dangerous_spf,
+                        frep.unknown,
+                        frep.diagnostic_coverage_pct,
+                        frep.spfm_pct
+                    );
+                }
+            }
+            Ok(if frep.dangerous_spf > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            })
+        }
+        Commands::Powercheck {
+            src,
+            upf: upf_path,
+            pd_off,
+            depth,
+            solver,
+            vcd_dir,
+        } => {
+            let module = src.compile_and_prepare()?;
+            let upf_spec = parse_upf_file(&upf_path)?;
+            let mut pd_off_pairs = Vec::new();
+            for item in &pd_off {
+                let Some((dom, sig)) = item.split_once('=') else {
+                    anyhow::bail!("invalid --pd-off '{item}' (expected DOMAIN=signal)");
+                };
+                pd_off_pairs.push((dom.trim().to_string(), sig.trim().to_string()));
+            }
+            let findings = run_powercheck(
+                &module,
+                &upf_spec,
+                &PowerCheckConfig {
+                    pd_off: pd_off_pairs,
+                    depth,
+                    solver,
+                    use_pdr: true,
+                },
+            )?;
+            if let Some(dir) = &vcd_dir {
+                fs::create_dir_all(dir)?;
+            }
+            let mut any_fail = false;
+            for (i, f) in findings.iter().enumerate() {
+                match &f.status {
+                    PowerStatus::Pass => {
+                        println!("PASS      [{} / {}] {} ({})", f.domain, f.rule, f.signal, f.check);
+                    }
+                    PowerStatus::Fail { step, trace } => {
+                        println!(
+                            "FAIL      [{} / {}] {} ({}) violated at cycle {step}",
+                            f.domain, f.rule, f.signal, f.check
+                        );
+                        if let Some(dir) = &vcd_dir {
+                            let path = dir.join(format!("powercheck_{i}.vcd"));
+                            fs::write(&path, vcd::write_vcd(&module, trace))?;
+                        }
+                        any_fail = true;
+                    }
+                    PowerStatus::StructuralViolation(msg) => {
+                        println!(
+                            "VIOLATION [{} / {}] {} — {msg}",
+                            f.domain, f.rule, f.signal
+                        );
+                        any_fail = true;
+                    }
+                    PowerStatus::Unknown => {
+                        println!("UNKNOWN   [{} / {}] {} ({})", f.domain, f.rule, f.signal, f.check);
+                        any_fail = true;
+                    }
+                }
+            }
+            Ok(if any_fail {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
             })
         }
         Commands::Cdc {

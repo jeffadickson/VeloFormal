@@ -33,9 +33,7 @@ impl SignOffReport {
     }
 
     pub fn has_failures(&self) -> bool {
-        self.items
-            .iter()
-            .any(|i| matches!(i.status.as_str(), "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" | "VACUOUS"))
+        self.items.iter().any(|i| is_failure_status(&i.status))
     }
 
     pub fn to_json(&self) -> String {
@@ -46,7 +44,7 @@ impl SignOffReport {
         let failures = self
             .items
             .iter()
-            .filter(|i| matches!(i.status.as_str(), "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" | "VACUOUS"))
+            .filter(|i| is_failure_status(&i.status))
             .count();
         let mut out = String::new();
         let _ = writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -64,10 +62,7 @@ impl SignOffReport {
                 xml_escape(&item.category),
                 xml_escape(&item.name)
             );
-            if matches!(
-                item.status.as_str(),
-                "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" | "VACUOUS"
-            ) {
+            if is_failure_status(&item.status) {
                 let _ = write!(
                     out,
                     r#"<failure message="{}: {}">{}</failure>"#,
@@ -86,7 +81,9 @@ impl SignOffReport {
         let mut results = Vec::new();
         for item in &self.items {
             let level = match item.status.as_str() {
-                "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" => "error",
+                "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "SPF" | "DEAD-END" | "VIOLATION" | "ERROR" => {
+                    "error"
+                }
                 "VACUOUS" | "WARN" | "UNKNOWN" => "warning",
                 _ => "note",
             };
@@ -127,30 +124,64 @@ impl SignOffReport {
     }
 
     /// Generate a self-contained Interactive HTML Sign-Off Dashboard with embedded SVG
-    /// waveform viewer for every counterexample and cover witness trace.
+    /// waveform viewer and Root-Cause Backtrace for every counterexample and witness trace.
     pub fn to_html(&self) -> String {
         let total = self.items.len();
         let passed = self
             .items
             .iter()
-            .filter(|i| matches!(i.status.as_str(), "PROVED" | "PASS" | "SAFE" | "SECURE" | "X-FREE" | "REACHED" | "NON-VACUOUS"))
+            .filter(|i| {
+                matches!(
+                    i.status.as_str(),
+                    "PROVED"
+                        | "PASS"
+                        | "SAFE"
+                        | "SAFE/MASKED"
+                        | "DETECTED"
+                        | "CLEAN"
+                        | "SECURE"
+                        | "X-FREE"
+                        | "REACHED"
+                        | "NON-VACUOUS"
+                )
+            })
             .count();
         let failed = self
             .items
             .iter()
-            .filter(|i| matches!(i.status.as_str(), "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" | "VACUOUS"))
+            .filter(|i| {
+                matches!(
+                    i.status.as_str(),
+                    "FAIL"
+                        | "LEAK"
+                        | "X-LEAK"
+                        | "BUG"
+                        | "SPF"
+                        | "DEAD-END"
+                        | "VIOLATION"
+                        | "ERROR"
+                        | "VACUOUS"
+                )
+            })
             .count();
         let other = total.saturating_sub(passed + failed);
 
         let mut rows = String::new();
         for (idx, item) in self.items.iter().enumerate() {
             let badge_cls = match item.status.as_str() {
-                "PROVED" | "PASS" | "SAFE" | "SECURE" | "X-FREE" | "REACHED" | "NON-VACUOUS" => "ok",
-                "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "ERROR" | "VACUOUS" => "fail",
+                "PROVED" | "PASS" | "SAFE" | "SAFE/MASKED" | "DETECTED" | "CLEAN" | "SECURE"
+                | "X-FREE" | "REACHED" | "NON-VACUOUS" => "ok",
+                "FAIL" | "LEAK" | "X-LEAK" | "BUG" | "SPF" | "DEAD-END" | "VIOLATION" | "ERROR"
+                | "VACUOUS" => "fail",
                 _ => "warn",
             };
             let wave_html = if let Some(trace) = &item.trace {
-                render_waveform_svg(trace, idx)
+                let mut panel = String::new();
+                if badge_cls == "fail" {
+                    panel.push_str(&render_backtrace_html(trace));
+                }
+                panel.push_str(&render_waveform_svg(trace, idx));
+                panel
             } else {
                 String::new()
             };
@@ -368,6 +399,66 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn is_failure_status(s: &str) -> bool {
+    matches!(
+        s,
+        "FAIL"
+            | "LEAK"
+            | "X-LEAK"
+            | "BUG"
+            | "SPF"
+            | "DEAD-END"
+            | "VIOLATION"
+            | "ERROR"
+            | "VACUOUS"
+    )
+}
+
+fn render_backtrace_html(trace: &[TraceFrame]) -> String {
+    if trace.is_empty() {
+        return String::new();
+    }
+    let mut prev: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut lines: Vec<String> = Vec::new();
+    let last_t = trace.len() - 1;
+    for (t, frame) in trace.iter().enumerate() {
+        for (name, bits) in &frame.values {
+            if name.starts_with('$') {
+                continue;
+            }
+            let val = if bits.width <= 4 {
+                format!("{}'b{}", bits.width, bits.bits)
+            } else if let Some(n) = bits.to_u64() {
+                format!("0x{n:X}")
+            } else {
+                format!("{}'b{}", bits.width, bits.bits)
+            };
+            match prev.get(name) {
+                None => {
+                    if t == last_t || !bits.is_zero() {
+                        lines.push(format!("[t={t}] {name} = {val}"));
+                    }
+                }
+                Some(p) if p != &val => {
+                    lines.push(format!("[t={t}] {name}: {p} -> {val}"));
+                }
+                _ => {}
+            }
+            prev.insert(name.clone(), val);
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    if lines.len() > 20 {
+        lines = lines.split_off(lines.len() - 20);
+    }
+    let body = html_escape(&lines.join("\n"));
+    format!(
+        r##"<div style="margin-bottom:10px;padding:10px 12px;background:#161b22;border:1px solid #30363d;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#ff7b72;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Root-Cause Signal Backtrace (to failure cycle t={last_t})</div><pre class="mono" style="margin:0;color:#c9d1d9;white-space:pre-wrap;line-height:1.45">{body}</pre></div>"##
+    )
 }
 
 fn xml_escape(s: &str) -> String {

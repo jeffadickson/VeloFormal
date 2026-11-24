@@ -1,0 +1,22 @@
+// SystemRDL 2.0 specification for AMBA APB3 CSR block `apb_csr`
+addrmap apb_csr_map {
+    reg {
+        regwidth = 8;
+        field { sw = rw; reset = 4'h5; } mode[3:0];
+    } CTRL @ 0x0;
+
+    reg {
+        regwidth = 8;
+        field { sw = r; reset = 8'hA5; } rev[7:0];
+    } STAT @ 0x4;
+
+    reg {
+        regwidth = 8;
+        field { sw = rw; onwrite = woclr; reset = 8'h0F; } flags[7:0];
+    } IRQ @ 0x8;
+
+    reg {
+        regwidth = 8;
+        field { sw = w; reset = 8'h00; } secret[7:0];
+    } KEY @ 0xC;
+};

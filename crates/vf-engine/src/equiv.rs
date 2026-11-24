@@ -9,6 +9,18 @@ use crate::kind::{run_kinduction, ProveConfig, ProveOutcome};
 
 /// Build a miter module comparing all outputs of `gold` and `gate` under shared inputs.
 pub fn build_miter(gold: &Module, gate: &Module) -> Result<Module> {
+    build_miter_filtered(gold, gate, &[], &[])
+}
+
+/// Build a miter module comparing selected outputs of `gold` and `gate` under shared inputs.
+/// - If `only_outputs` is non-empty, only those output port names are compared.
+/// - Any output port in `ignore_outputs` is skipped (useful for TMR/ECC safety-insertion SLEC).
+pub fn build_miter_filtered(
+    gold: &Module,
+    gate: &Module,
+    only_outputs: &[String],
+    ignore_outputs: &[String],
+) -> Result<Module> {
     let mut miter = Module::new(format!("equiv_{}_vs_{}", gold.name, gate.name));
 
     // Match inputs and outputs by name & width.
@@ -61,6 +73,12 @@ pub fn build_miter(gold: &Module, gate: &Module) -> Result<Module> {
     let mut compared = 0usize;
     for s in &gate.signals {
         if s.kind == SignalKind::Output {
+            if ignore_outputs.iter().any(|ig| ig == &s.name) {
+                continue;
+            }
+            if !only_outputs.is_empty() && !only_outputs.iter().any(|o| o == &s.name) {
+                continue;
+            }
             let Some(&gid) = gold_outputs.get(s.name.as_str()) else {
                 bail!("output port '{}' exists in gate but not in gold", s.name);
             };
@@ -249,7 +267,8 @@ fn embed_module(
 }
 
 /// Questa SLEC (Sequential Logic Equivalence Checking) configuration supporting
-/// pipeline latency offsets, reset sequences, and k-induction / ABC PDR backends.
+/// pipeline latency offsets, reset sequences, safety-insertion output filtering,
+/// Low-Power Clock Gating (LPGC) observability qualifiers, and k-induction / ABC PDR backends.
 #[derive(Debug, Clone)]
 pub struct SlecConfig {
     pub depth: usize,
@@ -262,6 +281,16 @@ pub struct SlecConfig {
     pub latency_gate: usize,
     /// Number of initial cycles to mask comparison while pipeline/reset settles.
     pub skip_cycles: usize,
+    /// Optional reset initialization sequence `(signal_name, active_value)` held for `reset_cycles`.
+    pub reset: Option<(String, u64)>,
+    /// Number of initial cycles to assert `reset` before deasserting (defaults to 1 when `reset` is set).
+    pub reset_cycles: usize,
+    /// Optional subset of output ports to compare (empty = all outputs).
+    pub outputs: Vec<String>,
+    /// Output ports to exclude from equivalence comparison (e.g. extra `err_flag` in TMR/ECC gate RTL).
+    pub ignore_outputs: Vec<String>,
+    /// Optional Low-Power Clock Gating (LPGC) / observability condition (compare outputs only when true).
+    pub valid_cond: Option<String>,
 }
 
 impl Default for SlecConfig {
@@ -273,21 +302,83 @@ impl Default for SlecConfig {
             latency_gold: 0,
             latency_gate: 0,
             skip_cycles: 0,
+            reset: None,
+            reset_cycles: 1,
+            outputs: Vec::new(),
+            ignore_outputs: Vec::new(),
+            valid_cond: None,
         }
     }
 }
 
-/// Build an SLEC miter with optional pipeline latency alignment and settling-cycle mask.
-pub fn build_slec_miter(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<Module> {
-    let mut miter = build_miter(gold, gate)?;
-    let max_lat = cfg.latency_gold.max(cfg.latency_gate);
-    let settle = cfg.skip_cycles.max(max_lat);
+/// Parse a CLI `--reset` specification like `"rst=1"` or `"rst_n=0"`.
+pub fn parse_reset_spec(spec: &str) -> Result<(String, u64)> {
+    if let Some((name, val)) = spec.split_once('=') {
+        let v: u64 = val
+            .trim()
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid reset value in '{spec}': {e}"))?;
+        Ok((name.trim().to_string(), v))
+    } else {
+        let name = spec.trim();
+        let active = if name.to_ascii_lowercase().ends_with("_n")
+            || name.to_ascii_lowercase().ends_with("resetn")
+        {
+            0
+        } else {
+            1
+        };
+        Ok((name.to_string(), active))
+    }
+}
 
-    if cfg.latency_gold == 0 && cfg.latency_gate == 0 && settle == 0 {
-        return Ok(miter);
+/// Build an SLEC miter with optional pipeline latency alignment, reset sequence,
+/// output filtering, and LPGC observability qualifier.
+pub fn build_slec_miter(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<Module> {
+    let mut miter = build_miter_filtered(gold, gate, &cfg.outputs, &cfg.ignore_outputs)?;
+    let max_lat = cfg.latency_gold.max(cfg.latency_gate);
+    let rst_cycles = if cfg.reset.is_some() {
+        cfg.reset_cycles.max(1)
+    } else {
+        0
+    };
+    let settle = cfg.skip_cycles.max(rst_cycles + max_lat);
+
+    // 1. Optional Reset-Sequence Initialization (`Assume(in_reset => rst == active_val)`).
+    if let Some((rst_name, active_val)) = &cfg.reset {
+        let rst_sid = miter
+            .find_signal(rst_name)
+            .ok_or_else(|| anyhow::anyhow!("SLEC reset signal '{rst_name}' not found"))?;
+        let rst_w = miter.signal(rst_sid).width;
+
+        // Build `$slec_in_reset` shift register: 1 for cycles `0..rst_cycles`, 0 forever after.
+        let mut chain = miter.c_bool(false);
+        for i in 0..rst_cycles {
+            let s = miter.add_signal(format!("$slec_in_rst_{i}"), 1, false, SignalKind::Reg);
+            miter.signal_mut(s).init = Some(vf_ir::ConstBits::one(1));
+            miter.ffs.push(Ff {
+                signal: s,
+                next: chain,
+                init: Some(vf_ir::ConstBits::one(1)),
+                clock: None,
+                async_reset: None,
+            });
+            chain = miter.sig_expr(s);
+        }
+
+        let rst_e = miter.sig_expr(rst_sid);
+        let active_c = miter.c_u64(rst_w, *active_val);
+        let is_active = miter.eq(rst_e, active_c, false);
+        miter.properties.push(Property {
+            name: "$slec_reset_seq".into(),
+            kind: PropertyKind::Assume,
+            cond: is_active,
+            en: chain,
+            source: None,
+        });
     }
 
-    // Build settling enable: 0 for cycles `0..settle`, then 1 forever via shift chain.
+    // 2. Optional settling enable: 0 for cycles `0..settle`, then 1 forever via shift chain.
     let mut valid_en = miter.c_bool(true);
     for i in 0..settle {
         let s = miter.add_signal(format!("$slec_valid_{i}"), 1, false, SignalKind::Reg);
@@ -302,7 +393,17 @@ pub fn build_slec_miter(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Resul
         valid_en = miter.sig_expr(s);
     }
 
-    // Replace equiv properties with latency-aligned comparisons gated by `valid_en`.
+    // 3. Optional Low-Power Clock Gating / observability qualifier (`--valid-cond`).
+    if let Some(cond_str) = &cfg.valid_cond {
+        let qual = parse_slec_cond(&mut miter, cond_str)?;
+        valid_en = miter.logic_and(valid_en, qual);
+    }
+
+    if cfg.latency_gold == 0 && cfg.latency_gate == 0 && settle == 0 && cfg.valid_cond.is_none() {
+        return Ok(miter);
+    }
+
+    // 4. Replace equiv properties with latency-aligned comparisons gated by `valid_en`.
     let old_props = std::mem::take(&mut miter.properties);
     let mut delay_counter = 0usize;
     for mut p in old_props {
@@ -352,6 +453,60 @@ pub fn build_slec_miter(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Resul
     }
 
     Ok(miter)
+}
+
+fn parse_slec_cond(m: &mut Module, expr: &str) -> Result<ExprId> {
+    let s = expr.trim();
+    if let Some((a, b)) = s.split_once("&&") {
+        let la = parse_slec_cond(m, a)?;
+        let lb = parse_slec_cond(m, b)?;
+        return Ok(m.logic_and(la, lb));
+    }
+    if let Some((a, b)) = s.split_once("||") {
+        let la = parse_slec_cond(m, a)?;
+        let lb = parse_slec_cond(m, b)?;
+        return Ok(m.logic_or(la, lb));
+    }
+    if let Some((lhs, rhs)) = s.split_once("==") {
+        let l = resolve_slec_atom(m, lhs.trim(), None)?;
+        let w = m.width(l);
+        let r = resolve_slec_atom(m, rhs.trim(), Some(w))?;
+        return Ok(m.eq(l, r, false));
+    }
+    if let Some((lhs, rhs)) = s.split_once("!=") {
+        let l = resolve_slec_atom(m, lhs.trim(), None)?;
+        let w = m.width(l);
+        let r = resolve_slec_atom(m, rhs.trim(), Some(w))?;
+        let eq = m.eq(l, r, false);
+        return Ok(m.not(eq));
+    }
+    if let Some(rest) = s.strip_prefix('!') {
+        let inner = parse_slec_cond(m, rest)?;
+        return Ok(m.logic_not(inner));
+    }
+    let atom = resolve_slec_atom(m, s, None)?;
+    Ok(m.to_bool(atom))
+}
+
+fn resolve_slec_atom(m: &mut Module, tok: &str, width_hint: Option<u32>) -> Result<ExprId> {
+    if let Some(sid) = m
+        .find_signal(tok)
+        .or_else(|| m.find_signal(&format!("gold.{tok}")))
+        .or_else(|| m.find_signal(&format!("gate.{tok}")))
+    {
+        return Ok(m.sig_expr(sid));
+    }
+    let parsed = if let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok()
+    } else if let Some(bin) = tok.strip_prefix("0b").or_else(|| tok.strip_prefix("0B")) {
+        u64::from_str_radix(bin, 2).ok()
+    } else {
+        tok.parse::<u64>().ok()
+    };
+    if let Some(v) = parsed {
+        return Ok(m.c_u64(width_hint.unwrap_or(32), v));
+    }
+    bail!("unknown signal or literal '{tok}' in SLEC --valid-cond")
 }
 
 pub fn check_slec(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<(Module, ProveOutcome)> {

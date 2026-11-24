@@ -1,8 +1,8 @@
 # VeloFormal Examples
 
-Nineteen self-contained, verified formal verification examples covering every SymbiYosys-class engine, Questa-class Formal App, `.vfc` v1.0 Contract DSL, industry-standard formats (SVA `bind`, SystemRDL, IP-XACT, SDC, Questa Tcl), and reusable `vip/` Formal Assertion Library checker.
+Twenty-one self-contained, verified formal verification examples covering every SymbiYosys-class engine, Questa One / Questa Formal App (including ISO 26262 Fault Analysis, UPF PowerCheck, SLEC LPGC, APB Register Check, PropCheck Dead-End & AutoCheck FSM Livelock/Unreachable), `.vfc` v1.0 Contract DSL, industry-standard formats, and reusable `vip/` QFL checkers.
 
-All examples are executed continuously in CI via [`examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs) and [`dsl_and_standards.rs`](../crates/vf-cli/tests/dsl_and_standards.rs).
+All examples are executed continuously in CI via [`examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs), [`dsl_and_standards.rs`](../crates/vf-cli/tests/dsl_and_standards.rs), [`flagship_tracks.rs`](../crates/vf-cli/tests/flagship_tracks.rs), and [`questa_deep_gaps.rs`](../crates/vf-cli/tests/questa_deep_gaps.rs).
 
 | # | Example | Feature / App | Expected Result |
 |---|---------|---------------|-----------------|
@@ -26,6 +26,7 @@ All examples are executed continuously in CI via [`examples_suite.rs`](../crates
 | 18 | [`18_vfc_contracts`](18_vfc_contracts/) | `.vfc` v1.0 Contract DSL (counter, FIFO scoreboard, key vault security + xfree, `emit-sva`) | `PROVED`, `REACHED`, `SECURE`, `X-FREE` |
 | 19 | [`19_industry_standards`](19_industry_standards/) | IEEE 1800 SVA `bind`/`[*3]`/`until`, SystemRDL `.rdl`, IP-XACT `.xml`, SDC `.sdc`, Questa `.do` Tcl + SARIF/HTML | `PROVED` / `PASS` / `SAFE` |
 | 20 | [`20_riscv_rv32i_formal`](20_riscv_rv32i_formal/) | Real 2-stage pipelined RV32I RISC-V Core verified via `.vfc` ISA contract + X-Check | `PROVED`, `X-FREE`, `REACHED` |
+| 21 | [`21_questa_parity`](21_questa_parity/) | ISO 26262 `fault` (TMR/Parity), UPF `powercheck`, SLEC LPGC, APB3 `regcheck`, `deadend`, AutoCheck FSM livelock/unreachable/shift | `SAFE/MASKED`, `DETECTED`, `PASS`, `EQUIVALENT`, `DEAD-END` |
 
 ## Commands
 

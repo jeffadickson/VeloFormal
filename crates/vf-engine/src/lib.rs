@@ -1,8 +1,10 @@
+pub mod backtrace;
 pub mod bmc;
 pub mod cache;
 pub mod cert;
 pub mod cover;
 pub mod coverage;
+pub mod deadend;
 pub mod equiv;
 pub mod kind;
 pub mod live;
