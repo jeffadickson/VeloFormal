@@ -1,0 +1,40 @@
+// Tier 3 — VeloFormal Contract DSL (.vfc v1.0) — 33 lines TOTAL!
+// Unifies FIVE verification domains in ONE readable contract:
+//  1. Protocol compliance (`use handshake`)
+//  2. Ghost state accounting (`ghost` + `update` + `invariant`)
+//  3. Multi-cycle temporal windows (`after`, `within 1..3`, `until`)
+//  4. 4-State X-Propagation Check (`xfree`)          <-- IMPOSSIBLE in SVA!
+//  5. 2-Copy Information Flow Security (`secure`)    <-- IMPOSSIBLE in SVA!
+contract CryptoEngineSpec for crypto_engine {
+    clock posedge clk;
+    reset when rst;
+
+    // 1. Response stream ready/valid stability under backpressure
+    use handshake(resp_valid, resp_ready, resp_data);
+
+    // 2. Ghost model tracking started jobs vs public telemetry completions
+    ghost jobs_started: logic[4] = 0;
+    update {
+        if (cmd_valid && cmd_ready && jobs_started < 15) {
+            jobs_started <= jobs_started + 1;
+        }
+    }
+
+    invariant no_accept_while_busy: busy => !cmd_ready;
+    invariant done_implies_busy: done => busy;
+    invariant completions_le_started: telemetry_out <= jobs_started;
+
+    // 3. Multi-cycle cryptographic round timing
+    operation start_job when cmd_valid && cmd_ready {
+        ensure enters_busy after 1 cycles: busy;
+        ensure completes within 1..3 cycles: done;
+        ensure stays_busy until done: busy;
+    }
+
+    // 4. 4-State X-Check & 5. 2-Copy Information Flow Confidentiality + Declassification
+    xfree resp_valid, busy, done, telemetry_out, resp_is_auth;
+    secure secret_key -> telemetry_out;
+    secure secret_key -> resp_data unless resp_is_auth;
+
+    cover auth_response: resp_valid && resp_is_auth;
+}

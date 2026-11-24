@@ -1,0 +1,18 @@
+// Tier 1 — VeloFormal Contract DSL (.vfc v1.0) — 16 lines, zero boilerplate!
+// No port re-declarations, no `f_past_valid`, no repeated `disable iff`, no hand-coded handshake!
+contract HandshakePipeSpec for handshake_pipe {
+    clock posedge clk;
+    reset when rst;
+
+    // 1-line reusable ready/valid stability under backpressure!
+    use handshake(out_valid, out_ready, out_data);
+
+    invariant ready_when_empty: !out_valid => in_ready;
+
+    operation accept when in_valid && in_ready {
+        ensure produces_incremented after 1 cycles:
+            out_valid && out_data == at_trigger(in_data) + 8'd1;
+    }
+
+    cover transfer_42: out_valid && out_ready && out_data == 8'h42;
+}

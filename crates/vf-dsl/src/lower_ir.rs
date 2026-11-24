@@ -460,11 +460,15 @@ impl<'a> LowerCtx<'a> {
                     let a = *a as usize;
                     let b = *b as usize;
                     // Track overlapping independent obligations across slots `1..=b`.
-                    let mut prev_pending = eff_trig;
+                    // Keep `prev_trig` separate from `prev_met` so early completion (before deadline `b`)
+                    // never makes the deadline assertion's enable guard falsely vacuous!
+                    let mut prev_trig = eff_trig;
+                    let mut prev_met = self.module.c_bool(false);
                     let mut prev_caps = captured_at_t0;
 
                     for slot in 1..=b {
-                        let slot_act = self.make_resettable_reg_1(prev_pending);
+                        let slot_trig = self.make_resettable_reg_1(prev_trig);
+                        let slot_met = self.make_resettable_reg_1(prev_met);
                         let mut slot_caps = Vec::with_capacity(prev_caps.len());
                         for cap in &prev_caps {
                             slot_caps.push(TypedVal {
@@ -480,24 +484,26 @@ impl<'a> LowerCtx<'a> {
                             self.trigger_idx = 0;
                             let resp = self.lower_bool(&ens.response)?;
                             self.trigger_captures = None;
+                            let met_now = self.module.logic_or(slot_met, resp);
 
                             if slot == b {
-                                // Deadline reached: response MUST hold if obligation still pending!
-                                let en = self.module.logic_and(slot_act, self.active_expr);
+                                // Deadline reached: response MUST have held at some cycle in `a..=b`!
+                                let en = self.module.logic_and(slot_trig, self.active_expr);
                                 self.module.properties.push(Property {
                                     name: prop_name.clone(),
                                     kind: guar_kind,
-                                    cond: resp,
+                                    cond: met_now,
                                     en,
                                     source: Some(format!("{}", ens.span)),
                                 });
                             } else {
-                                let not_resp = self.module.logic_not(resp);
-                                prev_pending = self.module.logic_and(slot_act, not_resp);
+                                prev_trig = slot_trig;
+                                prev_met = met_now;
                                 prev_caps = slot_caps;
                             }
                         } else {
-                            prev_pending = slot_act;
+                            prev_trig = slot_trig;
+                            prev_met = slot_met;
                             prev_caps = slot_caps;
                         }
                     }

@@ -303,3 +303,79 @@ fn industry_questa_tcl_runner_and_sarif_junit_json_html_reports() {
     assert!(out.contains("<testsuite"), "{out}");
     assert!(out.contains("<testcase"), "{out}");
 }
+
+#[test]
+fn example_22_three_tier_dsl_vs_sva_showcase() {
+    // Tier 1: Ready/Valid Handshake Pipe (.vfc + vacuity AND traditional SVA bind)
+    let (c1, o1) = run_vf(&[
+        "contract",
+        "examples/22_dsl_vs_sva_showcase/01_handshake_pipe/handshake_pipe.sv",
+        "--spec",
+        "examples/22_dsl_vs_sva_showcase/01_handshake_pipe/handshake_pipe.vfc",
+        "--vacuity",
+    ]);
+    assert_eq!(c1, 0, "Tier 1 .vfc failed:\n{o1}");
+    assert!(o1.contains("PROVED") && o1.contains("NON-VACUOUS"), "{o1}");
+
+    let (c1s, o1s) = run_vf(&[
+        "prove",
+        "examples/22_dsl_vs_sva_showcase/01_handshake_pipe/handshake_pipe.sv",
+        "examples/22_dsl_vs_sva_showcase/01_handshake_pipe/handshake_pipe_sva.sv",
+        "--top",
+        "handshake_pipe",
+    ]);
+    assert_eq!(c1s, 0, "Tier 1 SVA failed:\n{o1s}");
+    assert!(o1s.contains("PROVED"), "{o1s}");
+
+    // Tier 2: Synchronous Packet FIFO (.vfc + vacuity AND traditional SVA bind scoreboard)
+    let (c2, o2) = run_vf(&[
+        "contract",
+        "examples/22_dsl_vs_sva_showcase/02_packet_fifo/packet_fifo.sv",
+        "--spec",
+        "examples/22_dsl_vs_sva_showcase/02_packet_fifo/packet_fifo.vfc",
+        "--engine",
+        "pdr",
+        "--vacuity",
+    ]);
+    assert_eq!(c2, 0, "Tier 2 .vfc failed:\n{o2}");
+    assert!(o2.contains("PROVED") && o2.contains("NON-VACUOUS"), "{o2}");
+
+    let (c2s, o2s) = run_vf(&[
+        "prove",
+        "examples/22_dsl_vs_sva_showcase/02_packet_fifo/packet_fifo.sv",
+        "examples/22_dsl_vs_sva_showcase/02_packet_fifo/packet_fifo_sva.sv",
+        "--top",
+        "packet_fifo",
+        "--engine",
+        "pdr",
+    ]);
+    assert_eq!(c2s, 0, "Tier 2 SVA failed:\n{o2s}");
+    assert!(o2s.contains("PROVED"), "{o2s}");
+
+    // Tier 3: Secure Crypto Accelerator (.vfc 5-domain unified proof + vacuity + X-FREE + SECURE AND traditional SVA bind)
+    let (c3, o3) = run_vf(&[
+        "contract",
+        "examples/22_dsl_vs_sva_showcase/03_secure_crypto_engine/crypto_engine.sv",
+        "--spec",
+        "examples/22_dsl_vs_sva_showcase/03_secure_crypto_engine/crypto_engine.vfc",
+        "--vacuity",
+    ]);
+    assert_eq!(c3, 0, "Tier 3 .vfc failed:\n{o3}");
+    assert!(
+        o3.contains("PROVED")
+            && o3.contains("NON-VACUOUS")
+            && o3.contains("X-FREE")
+            && o3.contains("SECURE"),
+        "{o3}"
+    );
+
+    let (c3s, o3s) = run_vf(&[
+        "prove",
+        "examples/22_dsl_vs_sva_showcase/03_secure_crypto_engine/crypto_engine.sv",
+        "examples/22_dsl_vs_sva_showcase/03_secure_crypto_engine/crypto_engine_sva.sv",
+        "--top",
+        "crypto_engine",
+    ]);
+    assert_eq!(c3s, 0, "Tier 3 SVA failed:\n{o3s}");
+    assert!(o3s.contains("PROVED"), "{o3s}");
+}

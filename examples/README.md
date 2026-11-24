@@ -1,8 +1,8 @@
 # VeloFormal Examples
 
-Twenty-one self-contained, verified formal verification examples covering every SymbiYosys-class engine, Questa One / Questa Formal App (including ISO 26262 Fault Analysis, UPF PowerCheck, SLEC LPGC, APB Register Check, PropCheck Dead-End & AutoCheck FSM Livelock/Unreachable), `.vfc` v1.0 Contract DSL, industry-standard formats, and reusable `vip/` QFL checkers.
+Twenty-two self-contained, verified formal verification examples covering every SymbiYosys-class engine, Questa One / Questa Formal App (including ISO 26262 Fault Analysis, UPF PowerCheck, SLEC LPGC, APB Register Check, PropCheck Dead-End & AutoCheck FSM Livelock/Unreachable), `.vfc` v1.0 Contract DSL vs traditional SVA, industry-standard formats, and reusable `vip/` QFL checkers.
 
-All examples are executed continuously in CI via [`examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs), [`dsl_and_standards.rs`](../crates/vf-cli/tests/dsl_and_standards.rs), [`flagship_tracks.rs`](../crates/vf-cli/tests/flagship_tracks.rs), and [`questa_deep_gaps.rs`](../crates/vf-cli/tests/questa_deep_gaps.rs).
+All examples are executed continuously in CI via [`examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs), [`dsl_and_standards.rs`](../crates/vf-cli/tests/dsl_and_standards.rs), [`flagship_tracks.rs`](../crates/vf-cli/tests/flagship_tracks.rs), [`questa_deep_gaps.rs`](../crates/vf-cli/tests/questa_deep_gaps.rs), and [`agentic_formal.rs`](../crates/vf-cli/tests/agentic_formal.rs).
 
 | # | Example | Feature / App | Expected Result |
 |---|---------|---------------|-----------------|
@@ -27,6 +27,7 @@ All examples are executed continuously in CI via [`examples_suite.rs`](../crates
 | 19 | [`19_industry_standards`](19_industry_standards/) | IEEE 1800 SVA `bind`/`[*3]`/`until`, SystemRDL `.rdl`, IP-XACT `.xml`, SDC `.sdc`, Questa `.do` Tcl + SARIF/HTML | `PROVED` / `PASS` / `SAFE` |
 | 20 | [`20_riscv_rv32i_formal`](20_riscv_rv32i_formal/) | Real 2-stage pipelined RV32I RISC-V Core verified via `.vfc` ISA contract + X-Check | `PROVED`, `X-FREE`, `REACHED` |
 | 21 | [`21_questa_parity`](21_questa_parity/) | ISO 26262 `fault` (TMR/Parity), UPF `powercheck`, SLEC LPGC, APB3 `regcheck`, `deadend`, AutoCheck FSM livelock/unreachable/shift | `SAFE/MASKED`, `DETECTED`, `PASS`, `EQUIVALENT`, `DEAD-END` |
+| 22 | [`22_dsl_vs_sva_showcase`](22_dsl_vs_sva_showcase/) | 3-Tier Side-by-Side `.vfc` DSL vs Traditional SVA (`handshake_pipe` → `packet_fifo` → `secure_crypto_engine`) | All 3 tiers `PROVED`, `NON-VACUOUS`, `X-FREE`, `SECURE` |
 
 ## Commands
 

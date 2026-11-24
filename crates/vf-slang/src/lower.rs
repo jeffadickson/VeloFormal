@@ -1005,11 +1005,43 @@ impl Lowerer {
                 other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
             },
             AssertionExpr::SeqConcat { elements } => {
-                // Lower sequence `##d0 e0 ##d1 e1 ...` (including leading `##2 ack` where element 0 has delay_min=2).
+                // Lower sequence `##d0 e0 ##d1 e1 ...` (including leading `##2 ack` or `##[1:3] done`).
                 let mut cur_trig = guard;
                 for (i, el) in elements.iter().enumerate() {
                     let d_min = el.delay_min as usize;
                     let d_max = el.delay_max.unwrap_or(el.delay_min) as usize;
+                    let is_last = i + 1 == elements.len();
+
+                    // Consequent bounded range delay (`##[d_min:d_max] target`):
+                    // In IEEE 1800 SVA, `assert (a |-> ##[M:N] b)` means `b` holds on AT LEAST ONE
+                    // cycle in `[M..=N]` after `a` (not all cycles!).
+                    if is_last && d_min < d_max && assert_kind != "cover" {
+                        let target = self.lower_assertion_bool(&el.expr, env)?;
+                        let mut prev_trig = cur_trig;
+                        let mut prev_met = if d_min == 0 {
+                            target
+                        } else {
+                            self.module.c_bool(false)
+                        };
+                        for slot in 1..=d_max {
+                            let slot_trig = self.make_sva_delay_reg(prev_trig);
+                            let slot_met = self.make_sva_delay_reg(prev_met);
+                            let met_now = if slot >= d_min {
+                                self.module.logic_or(slot_met, target)
+                            } else {
+                                slot_met
+                            };
+                            if slot == d_max {
+                                let en = self.apply_disable(slot_trig);
+                                self.add_property(assert_kind, met_now, en, loc);
+                            } else {
+                                prev_trig = slot_trig;
+                                prev_met = met_now;
+                            }
+                        }
+                        return Ok(());
+                    }
+
                     if d_min > 0 || d_max > 0 {
                         if d_min == d_max {
                             for _ in 0..d_min {
@@ -1017,7 +1049,11 @@ impl Lowerer {
                             }
                         } else {
                             let mut shifted = cur_trig;
-                            let mut any = self.module.c_bool(false);
+                            let mut any = if d_min == 0 {
+                                cur_trig
+                            } else {
+                                self.module.c_bool(false)
+                            };
                             for step in 1..=d_max {
                                 shifted = self.make_sva_delay_reg(shifted);
                                 if step >= d_min {
@@ -1027,7 +1063,7 @@ impl Lowerer {
                             cur_trig = any;
                         }
                     }
-                    if i + 1 == elements.len() {
+                    if is_last {
                         self.lower_concurrent_assert(assert_kind, &el.expr, cur_trig, env, loc)?;
                     } else {
                         let cond = self.lower_assertion_bool(&el.expr, env)?;
