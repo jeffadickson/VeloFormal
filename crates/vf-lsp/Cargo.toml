@@ -1,0 +1,16 @@
+[package]
+name = "vf-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vf-lsp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vf-dsl = { path = "../vf-dsl" }
+vf-slang = { path = "../vf-slang" }

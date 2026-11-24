@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: veloformal-linux-x86_64.tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: veloformal-macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --release --bin veloformal --bin vf-lsp
+
+      - name: Package release archive
+        run: |
+          mkdir -p dist/vip
+          cp target/release/veloformal target/release/vf-lsp dist/
+          cp -r vip/* dist/vip/
+          cp README.md LICENSE dist/
+          tar -czf "${{ matrix.asset }}" -C dist .
+
+      - name: Upload GitHub Release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}

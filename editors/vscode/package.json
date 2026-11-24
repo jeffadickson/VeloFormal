@@ -1,0 +1,47 @@
+{
+  "name": "veloformal-vfc",
+  "displayName": "VeloFormal (.vfc) Formal Verification",
+  "description": "Syntax highlighting, real-time width/sign diagnostics, formatting, hover docs, and one-click formal proofs for VeloFormal (.vfc) RTL contracts.",
+  "version": "0.1.0",
+  "publisher": "veloformal",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Linters", "Formatters"],
+  "activationEvents": ["onLanguage:vfc"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "vfc",
+        "aliases": ["VeloFormal Contract", "vfc"],
+        "extensions": [".vfc"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "vfc",
+        "scopeName": "source.vfc",
+        "path": "./syntaxes/vfc.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      { "command": "veloformal.verifyContract", "title": "VeloFormal: Verify Contract" },
+      { "command": "veloformal.emitSva", "title": "VeloFormal: Export IEEE 1800 SVA bind" }
+    ],
+    "configuration": {
+      "title": "VeloFormal",
+      "properties": {
+        "veloformal.lspPath": {
+          "type": "string",
+          "default": "vf-lsp",
+          "description": "Path to the vf-lsp language server executable"
+        },
+        "veloformal.cliPath": {
+          "type": "string",
+          "default": "veloformal",
+          "description": "Path to the veloformal CLI executable"
+        }
+      }
+    }
+  }
+}

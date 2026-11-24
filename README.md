@@ -125,16 +125,40 @@ Reusable SystemVerilog formal protocol checkers included in `vip/`:
 
 - [`vip/vf_handshake.sv`](vip/vf_handshake.sv) — Ready/Valid stability under backpressure + transfer covers
 - [`vip/vf_axi4_lite.sv`](vip/vf_axi4_lite.sv) — AMBA AXI4-Lite AW/W/B/AR/R channel compliance
+- [`vip/vf_axis.sv`](vip/vf_axis.sv) — AMBA AXI4-Stream (`tvalid`/`tready`/`tdata`/`tkeep`/`tlast`)
 - [`vip/vf_apb.sv`](vip/vf_apb.sv) — AMBA APB SETUP/ACCESS phase & wait-state stability
+- [`vip/vf_ahb_lite.sv`](vip/vf_ahb_lite.sv) — AMBA AHB-Lite wait-state & transfer stability
+- [`vip/vf_wishbone.sv`](vip/vf_wishbone.sv) — Wishbone B4 pipelined/classic protocol checker
+- [`vip/vf_tilelink_ul.sv`](vip/vf_tilelink_ul.sv) — SiFive TileLink-UL Channel A/D checker
 - [`vip/vf_fifo_props.sv`](vip/vf_fifo_props.sv) — Reusable FIFO safety & `$anyconst` data-integrity scoreboard
 
+## Proof Scalability, Formal Sign-Off Coverage & IDE (`vf-lsp`)
+
 ```bash
-veloformal prove vip/vf_handshake.sv vip/vf_apb.sv tests/verilog/vip_dut_test.sv --top vip_dut_test
+# Parallel portfolio (races k-ind + ABC PDR), parallel case-splitting, COI cache & blackboxing
+veloformal prove tests/verilog/pdr_non_inductive.sv --engine portfolio --cache-dir .vf-cache
+veloformal prove examples/01_traffic_light_fsm/traffic_light.sv --case-split ew_car=0..1
+
+# Proof Core (COI signal coverage + minimal assumption core) & Formal Mutation Testing (%)
+veloformal proof-core examples/06_arbiter_liveness/rr_arbiter_4.sv
+veloformal mutate examples/18_vfc_contracts/counter.sv --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --report mutate.html
+
+# Integrity-hashed Proof Certificates for assume-guarantee composition
+veloformal contract examples/18_vfc_contracts/counter.sv --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --emit-cert counter.vfcert.json
+
+# Real 2-stage pipelined RV32I RISC-V ISA formal verification + X-Check
+veloformal contract examples/20_riscv_rv32i_formal/rv32i_core.sv --spec examples/20_riscv_rv32i_formal/rv32i_isa.vfc --report rv32i.html
+
+# Native Rust Language Server + VS Code extension (`editors/vscode/`)
+cargo build --release --bin vf-lsp
+
+# Batteries-included Docker container (`veloformal` + `vf-lsp` + `z3` + `yosys-abc`)
+docker build -t veloformal .
 ```
 
 ## Examples
 
-See [`examples/README.md`](examples/README.md) for **19 self-contained, CI-verified formal verification examples** covering `.vfc` contracts, IEEE 1800 SVA (`bind`, named properties, repetition, `until`), SystemRDL/IP-XACT/SDC/Questa Tcl, FSMs, skid buffers, FIFOs, AMBA AXI4-Lite & APB VIP, round-robin arbitration & starvation lassos, IC3/PDR, SLEC, AutoCheck, CoverCheck, Connectivity, Secure IFT, X-Check, Register Check, CDC/RDC, and Vacuity detection.
+See [`examples/README.md`](examples/README.md) for **20 self-contained, CI-verified formal verification examples** covering a pipelined RV32I RISC-V core, `.vfc` contracts, IEEE 1800 SVA (`bind`, named properties, repetition, `until`), SystemRDL/IP-XACT/SDC/Questa Tcl, FSMs, skid buffers, FIFOs, AMBA AXI4-Lite/APB VIP, round-robin arbitration & starvation lassos, IC3/PDR, SLEC, AutoCheck, CoverCheck, Connectivity, Secure IFT, X-Check, Register Check, CDC/RDC, and Vacuity detection.
 
 ## SymbiYosys & SystemVerilog Formal Coverage
 

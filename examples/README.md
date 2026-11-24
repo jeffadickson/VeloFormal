@@ -25,6 +25,7 @@ All examples are executed continuously in CI via [`examples_suite.rs`](../crates
 | 17 | [`17_vacuity_detection`](17_vacuity_detection/) | PropCheck vacuity check catching assertions with unreachable guards | `NON-VACUOUS` & `VACUOUS` |
 | 18 | [`18_vfc_contracts`](18_vfc_contracts/) | `.vfc` v1.0 Contract DSL (counter, FIFO scoreboard, key vault security + xfree, `emit-sva`) | `PROVED`, `REACHED`, `SECURE`, `X-FREE` |
 | 19 | [`19_industry_standards`](19_industry_standards/) | IEEE 1800 SVA `bind`/`[*3]`/`until`, SystemRDL `.rdl`, IP-XACT `.xml`, SDC `.sdc`, Questa `.do` Tcl + SARIF/HTML | `PROVED` / `PASS` / `SAFE` |
+| 20 | [`20_riscv_rv32i_formal`](20_riscv_rv32i_formal/) | Real 2-stage pipelined RV32I RISC-V Core verified via `.vfc` ISA contract + X-Check | `PROVED`, `X-FREE`, `REACHED` |
 
 ## Commands
 
@@ -105,4 +106,13 @@ veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19
 veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19_industry_standards/uart_csr.xml
 veloformal cdc examples/16_cdc_async_bridge/async_bridge_buggy.sv --sdc examples/19_industry_standards/async_bridge.sdc
 veloformal tcl examples/19_industry_standards/questa_signoff.do --format sarif --report signoff.html
+
+# 20: Real 2-Stage Pipelined RV32I RISC-V Core Formal ISA Verification + X-Check
+veloformal contract examples/20_riscv_rv32i_formal/rv32i_core.sv --spec examples/20_riscv_rv32i_formal/rv32i_isa.vfc --report rv32i_signoff.html
+
+# Scalability & Sign-Off Coverage (Portfolio, Case-Splitting, COI Cache, Proof Core, Mutation Testing)
+veloformal prove tests/verilog/pdr_non_inductive.sv --engine portfolio --cache-dir .vf-cache
+veloformal prove examples/01_traffic_light_fsm/traffic_light.sv --case-split ew_car=0..1
+veloformal proof-core examples/06_arbiter_liveness/rr_arbiter_4.sv
+veloformal mutate examples/18_vfc_contracts/counter.sv --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --report mutate.html
 ```

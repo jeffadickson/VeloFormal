@@ -264,6 +264,8 @@ name = "vf-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
  "vf-ir",
  "vf-smt",
 ]
@@ -273,6 +275,17 @@ name = "vf-ir"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "vf-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "vf-dsl",
+ "vf-slang",
 ]
 
 [[package]]

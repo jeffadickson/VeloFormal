@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "VeloFormal Contract",
+  "scopeName": "source.vfc",
+  "patterns": [
+    { "name": "comment.line.double-slash.vfc", "match": "(//|#).*$" },
+    { "name": "comment.block.vfc", "begin": "/\\*", "end": "\\*/" },
+    {
+      "name": "keyword.control.vfc",
+      "match": "\\b(contract|for|parameter|where|clock|posedge|negedge|reset|when|require|invariant|operation|ensure|after|within|cycles|cycle|until|eventually|fair|cover|symbolic|anyconst|anyseq|ghost|update|if|else|use|xfree|secure|unless)\\b"
+    },
+    {
+      "name": "storage.type.vfc",
+      "match": "\\b(logic|bool|int|integer|signed|unsigned)\\b"
+    },
+    {
+      "name": "support.function.vfc",
+      "match": "\\b(at_trigger|prev|rose|fell|stable|changed|resize|ite|onehot|onehot0|countones|handshake|apb|axi4_lite|fifo_scoreboard)\\b"
+    },
+    {
+      "name": "constant.language.vfc",
+      "match": "\\b(true|false)\\b"
+    },
+    {
+      "name": "constant.numeric.vfc",
+      "match": "\\b([0-9]+'[sS]?[bBdDhHoO][0-9a-fA-F_]+|0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*)\\b"
+    },
+    {
+      "name": "keyword.operator.vfc",
+      "match": "(=>|->|<=|>=|==|!=|&&|\\|\\||<<|>>|\\.\\.)"
+    }
+  ]
+}

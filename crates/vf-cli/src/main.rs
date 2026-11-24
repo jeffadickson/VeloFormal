@@ -20,13 +20,20 @@ use vf_apps::secure::{run_secure_check, SecureConfig, SecureOutcome};
 use vf_apps::xcheck::{run_xcheck, XCheckConfig, XStatus};
 use vf_dsl::{emit_sva, format_contract, lower_contract_to_ir, parse_contract, ContractRole};
 use vf_engine::bmc::{run_bmc, BmcConfig, BmcOutcome};
+use vf_engine::cert::ProofCertificate;
 use vf_engine::cover::{run_cover, CoverConfig};
+use vf_engine::coverage::{
+    compute_proof_core, run_mutation_analysis, MutantStatus, MutationConfig,
+};
 use vf_engine::equiv::{check_slec, SlecConfig};
 use vf_engine::kind::{run_kinduction, ProveConfig, ProveOutcome};
 use vf_engine::live::{run_live, LiveConfig, LiveOutcome};
 use vf_engine::pdr::{run_pdr, PdrConfig};
+use vf_engine::portfolio::{parse_case_split, run_case_split, run_portfolio, PortfolioConfig};
 use vf_engine::vacuity::{check_vacuity, VacuityConfig, VacuityStatus};
-use vf_ir::passes::{async2sync, clk2fflogic, coi_prune, has_multiple_clocks};
+use vf_ir::passes::{
+    apply_cutpoint, async2sync, blackbox_instance, clk2fflogic, coi_prune, has_multiple_clocks,
+};
 use vf_ir::Module;
 use vf_slang::{compile_to_ir, CompileOptions};
 use vf_smt::{aiger, btor2, smt2, vcd};
@@ -119,19 +126,31 @@ enum Commands {
         #[arg(long)]
         vcd: Option<PathBuf>,
     },
-    /// Prove assertions unboundedly using k-induction and/or IC3/PDR (abc pdr)
+    /// Prove assertions unboundedly using k-induction, IC3/PDR, or parallel portfolio + case-splitting
     Prove {
         #[command(flatten)]
         src: SourceArgs,
         /// Maximum induction depth k (for k-induction)
         #[arg(long, default_value_t = 20)]
         depth: usize,
-        /// Proof engine: kind, pdr, or auto (k-induction then PDR fallback)
+        /// Proof engine: auto, portfolio (parallel k-ind + PDR race), kind, or pdr
         #[arg(long, default_value = "auto")]
         engine: String,
         /// Apply Cone-of-Influence (COI) pruning before proving
         #[arg(long)]
         coi: bool,
+        /// Parallel case-splitting specification (e.g. `mode=0..3` or `sel=0,1,2`)
+        #[arg(long)]
+        case_split: Option<String>,
+        /// Submodule instance prefix(es) to blackbox for assume-guarantee composition
+        #[arg(long = "blackbox")]
+        blackbox: Vec<String>,
+        /// Signal name(s) to turn into unconstrained symbolic cutpoints
+        #[arg(long = "cutpoint")]
+        cutpoints: Vec<String>,
+        /// Optional incremental COI proof cache directory (e.g. `.vf-cache`)
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
         /// SMT solver executable (z3, bitwuzla, cvc5)
         #[arg(long, default_value = "z3")]
         solver: String,
@@ -397,6 +416,46 @@ enum Commands {
         /// Output format: text, json, junit, or sarif
         #[arg(long, default_value = "text")]
         format: String,
+        /// Emit an integrity-hashed ProofCertificate JSON file upon unbounded proof
+        #[arg(long)]
+        emit_cert: Option<PathBuf>,
+        /// Verify an existing ProofCertificate before allowing caller/compositional checks
+        #[arg(long)]
+        verify_cert: Option<PathBuf>,
+    },
+    /// Formal Proof Core: compute COI signal coverage & minimal assumption core (detect over-constraints)
+    ProofCore {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Maximum induction depth
+        #[arg(long, default_value_t = 15)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+    },
+    /// Formal Mutation Testing: inject targeted RTL bugs and measure formal specification completeness (%)
+    Mutate {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Optional `.vfc` contract file to evaluate mutation coverage against
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// Maximum BMC depth per mutant
+        #[arg(long, default_value_t = 10)]
+        depth: usize,
+        /// Maximum number of mutants to inject
+        #[arg(long, default_value_t = 24)]
+        max_mutants: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Write Interactive HTML Sign-Off Dashboard
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Output format: text, json, junit, or sarif
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Export a `.vfc` contract to a portable IEEE 1800 SystemVerilog SVA `bind` file
     EmitSva {
@@ -532,52 +591,97 @@ fn run() -> Result<ExitCode> {
             depth,
             engine,
             coi,
+            case_split,
+            blackbox,
+            cutpoints,
+            cache_dir,
             solver,
             vcd: vcd_path,
         } => {
             let mut module = src.compile_and_prepare()?;
+            for inst in &blackbox {
+                let n = blackbox_instance(&mut module, inst, true);
+                eprintln!("blackboxed `{inst}` ({n} internal drivers abstracted)");
+            }
+            for cp in &cutpoints {
+                if !apply_cutpoint(&mut module, cp) {
+                    anyhow::bail!("cutpoint signal '{cp}' not found in module '{}'", module.name);
+                }
+            }
             if coi {
                 coi_prune(&mut module);
             }
-            let outcome = match engine.as_str() {
-                "pdr" => run_pdr(
+
+            let mut winner_note: Option<String> = None;
+            let outcome = if let Some(cs) = &case_split {
+                let spec = parse_case_split(cs)?;
+                let pr = run_case_split(
                     &module,
-                    &PdrConfig {
-                        smt_solver: solver,
-                        ..Default::default()
+                    &spec,
+                    &PortfolioConfig {
+                        depth,
+                        solver: solver.clone(),
+                        enable_pdr: engine != "kind",
+                        cache_dir,
                     },
-                )?,
-                "kind" => run_kinduction(
+                )?;
+                winner_note = Some(pr.winner);
+                pr.outcome
+            } else if engine == "portfolio" || cache_dir.is_some() {
+                let pr = run_portfolio(
                     &module,
-                    &ProveConfig {
-                        max_k: depth,
-                        solver,
+                    &PortfolioConfig {
+                        depth,
+                        solver: solver.clone(),
+                        enable_pdr: engine != "kind",
+                        cache_dir,
                     },
-                )?,
-                _ => {
-                    let k_res = run_kinduction(
+                )?;
+                winner_note = Some(pr.winner);
+                pr.outcome
+            } else {
+                match engine.as_str() {
+                    "pdr" => run_pdr(
+                        &module,
+                        &PdrConfig {
+                            smt_solver: solver,
+                            ..Default::default()
+                        },
+                    )?,
+                    "kind" => run_kinduction(
                         &module,
                         &ProveConfig {
                             max_k: depth,
-                            solver: solver.clone(),
+                            solver,
                         },
-                    )?;
-                    match k_res {
-                        ProveOutcome::Unknown { .. } => run_pdr(
+                    )?,
+                    _ => {
+                        let k_res = run_kinduction(
                             &module,
-                            &PdrConfig {
-                                smt_solver: solver,
-                                ..Default::default()
+                            &ProveConfig {
+                                max_k: depth,
+                                solver: solver.clone(),
                             },
-                        )
-                        .unwrap_or(k_res),
-                        other => other,
+                        )?;
+                        match k_res {
+                            ProveOutcome::Unknown { .. } => run_pdr(
+                                &module,
+                                &PdrConfig {
+                                    smt_solver: solver,
+                                    ..Default::default()
+                                },
+                            )
+                            .unwrap_or(k_res),
+                            other => other,
+                        }
                     }
                 }
             };
             match outcome {
                 ProveOutcome::Proved { k } => {
-                    if engine == "pdr" || k == 0 {
+                    if let Some(w) = winner_note {
+                        println!("PROVED (unbounded, winner={w})");
+                    } else if engine == "pdr" || k == 0 {
                         println!("PROVED (unbounded)");
                     } else {
                         println!("PROVED (unbounded, k-induction k={k})");
@@ -1123,9 +1227,20 @@ fn run() -> Result<ExitCode> {
             vcd: vcd_path,
             report: report_html,
             format,
+            emit_cert,
+            verify_cert,
         } => {
             let spec_text = fs::read_to_string(&spec)?;
             let contract = parse_contract(&spec_text)?;
+            if let Some(cp) = &verify_cert {
+                let cert = ProofCertificate::load_and_verify(cp, Some(&spec_text))?;
+                if format == "text" {
+                    println!(
+                        "CERT VERIFIED `{}` (module `{}`, engine `{}`, hash `{}`)",
+                        cert.contract_name, cert.module_name, cert.engine, cert.rtl_hash
+                    );
+                }
+            }
             let mut param_map: HashMap<String, i64> = HashMap::new();
             for p in &src.params {
                 if let Some((k, v)) = p.split_once('=') {
@@ -1520,12 +1635,126 @@ fn run() -> Result<ExitCode> {
                 }
             }
 
+            if let Some(cp) = &emit_cert {
+                let all_proved = !rep.has_failures()
+                    && rep.items.iter().any(|i| i.status == "PROVED");
+                if all_proved {
+                    let cert = ProofCertificate::create(
+                        &contract.name,
+                        &base,
+                        &spec_text,
+                        "PROVED",
+                        &engine,
+                    );
+                    cert.save(cp)?;
+                    if format == "text" {
+                        println!("Proof certificate written to {}", cp.display());
+                    }
+                } else {
+                    anyhow::bail!(
+                        "cannot emit proof certificate '{}': contract did not achieve unbounded PROVED status",
+                        cp.display()
+                    );
+                }
+            }
+
             emit_signoff_report(&rep, &format, report_html.as_deref())?;
             Ok(if rep.has_failures() {
                 ExitCode::from(1)
             } else {
                 ExitCode::SUCCESS
             })
+        }
+        Commands::ProofCore { src, depth, solver } => {
+            let module = src.compile_and_prepare()?;
+            let core = compute_proof_core(
+                &module,
+                &PortfolioConfig {
+                    depth,
+                    solver,
+                    enable_pdr: true,
+                    cache_dir: None,
+                },
+            )?;
+            let pct = if core.total_signals == 0 {
+                100.0
+            } else {
+                (core.coi_signals as f64 / core.total_signals as f64) * 100.0
+            };
+            println!(
+                "COI Signal Coverage: {}/{} ({:.1}%)",
+                core.coi_signals, core.total_signals, pct
+            );
+            if !core.uncovered_signal_names.is_empty() {
+                println!("Uncovered signals: {}", core.uncovered_signal_names.join(", "));
+            }
+            for a in &core.assumptions {
+                let tag = if a.essential { "ESSENTIAL" } else { "REDUNDANT" };
+                println!("ASSUME [{tag}] `{}`", a.name);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Mutate {
+            src,
+            spec,
+            depth,
+            max_mutants,
+            solver,
+            report: report_html,
+            format,
+        } => {
+            let mut module = src.compile_and_prepare()?;
+            if let Some(spec_path) = spec {
+                let text = fs::read_to_string(&spec_path)?;
+                let contract = parse_contract(&text)?;
+                let mut param_map = HashMap::new();
+                for p in &src.params {
+                    if let Some((k, v)) = p.split_once('=') {
+                        if let Ok(iv) = v.trim().parse::<i64>() {
+                            param_map.insert(k.trim().to_string(), iv);
+                        }
+                    }
+                }
+                module = lower_contract_to_ir(&module, &contract, ContractRole::Provider, &param_map)?.module;
+            }
+            let mrep = run_mutation_analysis(
+                &module,
+                &MutationConfig {
+                    depth,
+                    max_mutants,
+                    solver,
+                },
+            )?;
+            let mut rep = SignOffReport::new(
+                format!(
+                    "Formal Mutation Coverage: {}/{} killed ({:.1}%)",
+                    mrep.killed, mrep.total, mrep.score_percent
+                ),
+                module.name.clone(),
+            );
+            for m in &mrep.mutants {
+                let status = match m.status {
+                    MutantStatus::Killed => "PASS",
+                    MutantStatus::Survived => "WARN",
+                };
+                rep.items.push(ReportItem {
+                    name: format!("mutant_{}", m.id),
+                    category: "mutation".into(),
+                    status: status.into(),
+                    engine: "mutate".into(),
+                    detail: format!("{} — {}", m.description, m.detail),
+                    source: None,
+                    trace: None,
+                });
+            }
+            if format == "text" {
+                println!(
+                    "Formal Mutation Score: {}/{} killed ({:.1}%)",
+                    mrep.killed, mrep.total, mrep.score_percent
+                );
+            }
+            emit_signoff_report(&rep, &format, report_html.as_deref())?;
+            Ok(ExitCode::SUCCESS)
         }
         Commands::EmitSva {
             spec,

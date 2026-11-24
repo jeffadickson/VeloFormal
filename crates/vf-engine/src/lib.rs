@@ -1,7 +1,11 @@
 pub mod bmc;
+pub mod cache;
+pub mod cert;
 pub mod cover;
+pub mod coverage;
 pub mod equiv;
 pub mod kind;
 pub mod live;
 pub mod pdr;
+pub mod portfolio;
 pub mod vacuity;

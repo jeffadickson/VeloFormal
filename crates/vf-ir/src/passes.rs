@@ -324,3 +324,92 @@ pub fn coi_prune(m: &mut Module) {
     m.ffs.retain(|f| needed_sigs.contains(&f.signal));
     m.mem_writes.retain(|w| needed_mems.contains(&w.mem));
 }
+
+/// Assume-guarantee blackboxing pass: abstracts every signal driven inside submodule instance
+/// `instance_prefix` (e.g. `u_alu`) into unconstrained `AnySeq` values (freeing the parent proof
+/// from bit-blasting the submodule's internals), while optionally promoting submodule assertions
+/// into assumptions (after the submodule has been proved separately with a ProofCertificate!).
+pub fn blackbox_instance(m: &mut Module, instance_prefix: &str, promote_asserts_to_assumes: bool) -> usize {
+    let prefix_dot = if instance_prefix.ends_with('.') {
+        instance_prefix.to_string()
+    } else {
+        format!("{instance_prefix}.")
+    };
+
+    // Identify internal signals belonging to `instance_prefix.*` that are driven internally
+    // (NOT input port bindings from the parent, i.e. comb assigns whose RHS references signals OUTSIDE prefix_dot).
+    let mut sub_sigs: HashSet<SignalId> = HashSet::new();
+    for s in &m.signals {
+        if s.name.starts_with(&prefix_dot) {
+            sub_sigs.insert(s.id);
+        }
+    }
+    if sub_sigs.is_empty() {
+        return 0;
+    }
+
+    // Keep parent->submodule input port bindings (`connect u_sub.in_port = parent_sig`);
+    // remove internal FFs, mem_writes, and internal comb assignments driven inside the submodule!
+    let mut freed = HashSet::new();
+    m.ffs.retain(|f| {
+        if sub_sigs.contains(&f.signal) {
+            freed.insert(f.signal);
+            false
+        } else {
+            true
+        }
+    });
+    let memories = &m.memories;
+    m.mem_writes
+        .retain(|w| !memories[w.mem.0].name.starts_with(&prefix_dot));
+    let exprs = &m.exprs;
+    m.comb.retain(|c| {
+        if !sub_sigs.contains(&c.signal) {
+            return true;
+        }
+        // Check if this is a parent-to-child input port wire (`connect u_sub.a = top_a`).
+        let is_parent_input = match exprs[c.value.0].kind {
+            ExprKind::Signal(src) => !sub_sigs.contains(&src),
+            _ => false,
+        };
+        if is_parent_input {
+            true
+        } else {
+            freed.insert(c.signal);
+            false
+        }
+    });
+
+    for &sid in &freed {
+        m.signal_mut(sid).kind = SignalKind::AnySeq;
+        m.signal_mut(sid).init = None;
+    }
+
+    if promote_asserts_to_assumes {
+        for p in &mut m.properties {
+            let in_sub = p.name.contains(&prefix_dot)
+                || p.source
+                    .as_deref()
+                    .map(|s| s.contains(instance_prefix))
+                    .unwrap_or(false);
+            if in_sub && p.kind == PropertyKind::Assert {
+                p.kind = PropertyKind::Assume;
+            }
+        }
+    }
+
+    freed.len()
+}
+
+/// Replace a signal's driver with a free symbolic `AnySeq` cutpoint (sound over-approximation for scaling proofs).
+pub fn apply_cutpoint(m: &mut Module, signal_name: &str) -> bool {
+    let Some(sid) = m.find_signal(signal_name) else {
+        return false;
+    };
+    m.comb.retain(|c| c.signal != sid);
+    m.ffs.retain(|f| f.signal != sid);
+    m.signal_mut(sid).kind = SignalKind::AnySeq;
+    m.signal_mut(sid).init = None;
+    true
+}
+

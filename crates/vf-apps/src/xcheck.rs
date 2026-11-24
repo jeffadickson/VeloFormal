@@ -151,36 +151,42 @@ fn build_dual_rail_module(
         v_sig_map.insert(s.id, vid);
 
         let is_x_src = x_sources.contains(&s.name);
-        let x_kind = match s.kind {
-            SignalKind::Input if is_x_src => SignalKind::Input,
-            SignalKind::Input | SignalKind::AnySeq | SignalKind::AnyConst => SignalKind::Wire,
-            SignalKind::Output | SignalKind::Wire => SignalKind::Wire,
-            SignalKind::Reg => SignalKind::Reg,
+        let is_ff = ff_inits.contains_key(&s.id);
+        let x_kind = if is_ff {
+            SignalKind::Reg
+        } else {
+            match s.kind {
+                SignalKind::Input if is_x_src => SignalKind::Input,
+                SignalKind::Input | SignalKind::AnySeq | SignalKind::AnyConst => SignalKind::Wire,
+                SignalKind::Output | SignalKind::Wire => SignalKind::Wire,
+                SignalKind::Reg => SignalKind::Reg,
+            }
         };
         let xid = dst.add_signal(format!("{}__x", s.name), s.width, false, x_kind);
-        match s.kind {
-            SignalKind::Input if is_x_src => {}
-            SignalKind::Input | SignalKind::AnySeq | SignalKind::AnyConst => {
-                let z = if is_x_src {
-                    dst.c_bits(all_ones(s.width))
-                } else {
-                    dst.c_bits(ConstBits::zero(s.width))
-                };
-                dst.comb.push(CombAssign {
-                    signal: xid,
-                    value: z,
-                });
+        if is_ff || s.kind == SignalKind::Reg {
+            let has_init = s.init.is_some() || ff_inits.get(&s.id).copied().unwrap_or(false);
+            let x_init = if !has_init || is_x_src {
+                all_ones(s.width)
+            } else {
+                ConstBits::zero(s.width)
+            };
+            dst.signal_mut(xid).init = Some(x_init);
+        } else {
+            match s.kind {
+                SignalKind::Input if is_x_src => {}
+                SignalKind::Input | SignalKind::AnySeq | SignalKind::AnyConst => {
+                    let z = if is_x_src {
+                        dst.c_bits(all_ones(s.width))
+                    } else {
+                        dst.c_bits(ConstBits::zero(s.width))
+                    };
+                    dst.comb.push(CombAssign {
+                        signal: xid,
+                        value: z,
+                    });
+                }
+                SignalKind::Output | SignalKind::Wire | SignalKind::Reg => {}
             }
-            SignalKind::Reg => {
-                let has_init = s.init.is_some() || ff_inits.get(&s.id).copied().unwrap_or(false);
-                let x_init = if !has_init || is_x_src {
-                    all_ones(s.width)
-                } else {
-                    ConstBits::zero(s.width)
-                };
-                dst.signal_mut(xid).init = Some(x_init);
-            }
-            SignalKind::Output | SignalKind::Wire => {}
         }
         x_sig_map.insert(s.id, xid);
     }

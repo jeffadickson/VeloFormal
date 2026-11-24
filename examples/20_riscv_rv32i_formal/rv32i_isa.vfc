@@ -1,0 +1,45 @@
+// Example 20: Formal RV32I RISC-V ISA Contract (.vfc v1.0)
+// Proves x0 hardwired zero, 4-byte PC alignment, branch flush pipeline kill,
+// exact ADD/SUB/XOR/LUI architectural semantics, and covers instruction retirement + branch!
+contract Rv32iIsaSafety for rv32i_core {
+    clock posedge clk;
+    reset when rst;
+
+    // Architectural invariants
+    invariant x0_hardwired_zero: reg_x0_val == 0;
+    invariant pc_4byte_aligned:  pc[1:0] == 2'b00;
+    invariant x0_never_written:  !(retire_rd_wen && retire_rd_addr[2:0] == 3'd0);
+
+    // RV32I ADD specification: opcode 0110011, funct3 000, funct7[5]==0
+    invariant isa_add_correct:
+        (retire_valid && retire_insn[6:0] == 7'b0110011 && retire_insn[14:12] == 3'b000 && retire_insn[30] == 1'b0 && retire_rd_addr[2:0] != 3'd0)
+        => (retire_rd_wen && retire_rd_wdata == retire_rs1_rdata + retire_rs2_rdata);
+
+    // RV32I SUB specification: opcode 0110011, funct3 000, funct7[5]==1
+    invariant isa_sub_correct:
+        (retire_valid && retire_insn[6:0] == 7'b0110011 && retire_insn[14:12] == 3'b000 && retire_insn[30] == 1'b1 && retire_rd_addr[2:0] != 3'd0)
+        => (retire_rd_wen && retire_rd_wdata == retire_rs1_rdata - retire_rs2_rdata);
+
+    // RV32I XOR specification: opcode 0110011, funct3 100
+    invariant isa_xor_correct:
+        (retire_valid && retire_insn[6:0] == 7'b0110011 && retire_insn[14:12] == 3'b100 && retire_rd_addr[2:0] != 3'd0)
+        => (retire_rd_wen && retire_rd_wdata == (retire_rs1_rdata ^ retire_rs2_rdata));
+
+    // RV32I LUI specification: opcode 0110111
+    invariant isa_lui_correct:
+        (retire_valid && retire_insn[6:0] == 7'b0110111 && retire_rd_addr[2:0] != 3'd0)
+        => (retire_rd_wen && retire_rd_wdata == {retire_insn[31:12], 12'd0});
+
+    // Pipeline control hazard: taken branch MUST flush next cycle's retirement!
+    operation take_branch when branch_taken {
+        ensure next_cycle_flushed after 1 cycles:
+            !retire_valid;
+    }
+
+    // X-Check: architectural retirement outputs must never carry silicon X
+    xfree pc, retire_valid, retire_rd_wen, branch_taken;
+
+    // Cover real RV32I instruction retirements & taken branch
+    cover retire_add:   retire_valid && retire_insn[6:0] == 7'b0110011 && retire_insn[14:12] == 3'b000;
+    cover taken_branch: branch_taken;
+}
