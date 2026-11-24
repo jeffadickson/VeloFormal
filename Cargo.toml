@@ -8,6 +8,7 @@ members = [
     "crates/vf-apps",
     "crates/vf-dsl",
     "crates/vf-lsp",
+    "crates/vf-mcp",
     "crates/vf-cli",
 ]
 

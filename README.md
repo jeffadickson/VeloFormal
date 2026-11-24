@@ -1,6 +1,8 @@
 # VeloFormal
 
-Native Verilog & SystemVerilog formal verification suite written in Rust, with an embedded [Slang](https://github.com/MikePopoloski/slang) IEEE 1800 frontend, word-level RTL netlist IR, SMT-LIB2 / BTOR2 / AIGER backends, full SymbiYosys-class engines, Questa-class Formal Apps, and the `.vfc` v1.0 Contract DSL.
+**Formal verification for the human and agentic era.**
+
+Native Verilog & SystemVerilog formal verification suite written in Rust — combining an embedded [Slang](https://github.com/MikePopoloski/slang) IEEE 1800 frontend, word-level RTL netlist IR, SMT-LIB2 / BTOR2 / AIGER backends, full SymbiYosys & Questa-class Formal Apps, the human-readable `.vfc` v1.0 Contract DSL, a VS Code Language Server (`vf-lsp`), and a native **Model Context Protocol server (`vf-mcp`)** with an **anti-cheating Trust Audit** (`veloformal audit`) so humans and AI coding agents collaborate on mathematically verified silicon.
 
 > The previous C#/Python prototype is preserved on the `archive/csharp-prototype` branch and `archive-csharp-prototype` tag.
 
@@ -13,9 +15,11 @@ Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .d
   ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, coi_prune, chformal, async2sync, clk2fflogic)
   ▼  vf-smt     — SMT-LIB2 (QF_BV/QF_ABV), BTOR2, binary AIGER 1.0 bit-blaster, solver pipe, VCD writer
   ▼  vf-engine  — BMC, k-Induction, IC3/PDR (ABC), Portfolio, Liveness/Fairness, Cover, Vacuity, Dead-End, Backtrace, SLEC
-  ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (IEEE 1801 UPF)
+  ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (UPF), Agent Introspection & Trust Audit
   ▼  vf-dsl     — `.vfc` v1.0 Contract DSL (brace syntax, strict typing, native IR lowering & IEEE 1800 SVA `bind` export)
-  ▼  vf-cli     — `veloformal` CLI, `.sby` runner, Questa `.do` Tcl runner, Interactive HTML/SVG Waveform + Backtrace & SARIF/JUnit/JSON reports
+  ▼  vf-lsp     — Native Rust Language Server + VS Code extension (`editors/vscode/`)
+  ▼  vf-mcp     — Native Rust Model Context Protocol (MCP) server for Claude, Cursor, Windsurf, Codex & Antigravity
+  ▼  vf-cli     — `veloformal` CLI (`inspect`, `scaffold`, `audit`, `.sby`, Questa `.do` Tcl, Interactive HTML/SVG Waveform + Backtrace & SARIF/JUnit/JSON)
   └── vip/      — Reusable Formal Assertion & QFL Library (Ready/Valid, AXI4-Lite, AXI4-Stream, APB, AHB-Lite, Wishbone, TileLink-UL, FIFO, Arbiter, Gray-Code)
 ```
 
@@ -30,8 +34,27 @@ Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .d
 
 ```bash
 git submodule update --init --recursive
-cargo build --release
+cargo build --release --workspace
 cargo test --workspace
+```
+
+## Formal for the Human & Agentic Era (`vf-mcp`, `inspect`, `scaffold`, `audit`)
+
+VeloFormal treats AI coding agents as first-class collaborators alongside human verification engineers — with built-in anti-cheating guardrails (see [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md), [`AGENTS.md`](AGENTS.md), and [`skills/veloformal/SKILL.md`](skills/veloformal/SKILL.md)):
+
+```bash
+# 1. Machine-readable RTL introspection (ports, widths, clock/reset polarity, FSMs, protocols)
+veloformal inspect examples/21_questa_parity/apb_csr.sv --format json
+
+# 2. Auto-scaffold a valid, type-checked starter `.vfc` contract from RTL
+veloformal scaffold examples/18_vfc_contracts/fifo_rtl.sv -o fifo_starter.vfc
+
+# 3. 4-Gate Anti-Cheating Trustworthiness Audit (Proof + Dead-End + Vacuity + Mutation Score)
+veloformal audit examples/18_vfc_contracts/counter.sv \
+    --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --format json
+
+# 4. Native Rust MCP Server (10 typed tools + `.vfc` spec resource + verification prompts)
+cargo build --release --bin vf-mcp
 ```
 
 ## VeloFormal Contract DSL (`.vfc` v1.0)

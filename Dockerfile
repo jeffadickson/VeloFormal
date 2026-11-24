@@ -11,7 +11,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /src
 COPY . .
-RUN cargo build --release --bin veloformal --bin vf-lsp
+RUN cargo build --release --bin veloformal --bin vf-lsp --bin vf-mcp
 
 FROM ubuntu:24.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /src/target/release/veloformal /usr/local/bin/veloformal
 COPY --from=builder /src/target/release/vf-lsp /usr/local/bin/vf-lsp
+COPY --from=builder /src/target/release/vf-mcp /usr/local/bin/vf-mcp
 COPY --from=builder /src/vip /usr/local/share/veloformal/vip
 
 WORKDIR /work

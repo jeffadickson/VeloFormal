@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod autocheck;
 pub mod cdc;
 pub mod connectivity;

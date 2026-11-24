@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use vf_apps::agent::{inspect_module, run_trust_audit, scaffold_vfc_contract, TrustAuditConfig};
 use vf_apps::autocheck::{run_autocheck, AutoCheckConfig, CheckStatus};
 use vf_apps::cdc::{parse_sdc_file, run_cdc_analysis, CdcConfig, CdcSeverity, GrayStatus};
 use vf_apps::connectivity::{parse_connectivity_csv, run_connectivity, ConnStatus};
@@ -636,6 +637,45 @@ enum Commands {
         /// Output `.aig` file path
         #[arg(short = 'o', long)]
         output: PathBuf,
+    },
+    /// Inspect elaborated RTL ports, clocks, reset polarity, registers, FSMs, and bus protocols (human & AI agent introspection)
+    Inspect {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Auto-scaffold a valid, type-safe `.vfc` v1.0 starter contract directly from elaborated Verilog/SV RTL
+    Scaffold {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Output `.vfc` file path (prints to stdout if omitted)
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+    /// 4-Gate Anti-Cheating Trustworthiness Audit (unbounded proof + dead-end check + vacuity check + mutation kill score)
+    Audit {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Optional `.vfc` contract file to audit alongside the RTL
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// Minimum formal mutation kill score (%) required for TRUSTWORTHY sign-off
+        #[arg(long, default_value_t = 50.0)]
+        min_mutation_score: f64,
+        /// Maximum number of RTL mutants to test
+        #[arg(long, default_value_t = 16)]
+        max_mutants: usize,
+        /// Maximum proof/BMC depth
+        #[arg(long, default_value_t = 15)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -2245,6 +2285,143 @@ fn run() -> Result<ExitCode> {
                 output.display()
             );
             Ok(ExitCode::SUCCESS)
+        }
+        Commands::Inspect { src, format } => {
+            let module = src.compile_raw()?;
+            let info = inspect_module(&module);
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            } else {
+                println!("Module: {}", info.module_name);
+                if !info.clocks.is_empty() {
+                    println!("  Clocks:    {}", info.clocks.join(", "));
+                }
+                if let Some(rst) = &info.reset {
+                    let pol = if rst.active_low { "active-low" } else { "active-high" };
+                    println!("  Reset:     {} ({pol})", rst.name);
+                }
+                println!(
+                    "  Inputs ({}):  {}",
+                    info.inputs.len(),
+                    info.inputs
+                        .iter()
+                        .map(|p| format!("{}[{}]", p.name, p.width))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                println!(
+                    "  Outputs ({}): {}",
+                    info.outputs.len(),
+                    info.outputs
+                        .iter()
+                        .map(|p| format!("{}[{}]", p.name, p.width))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                println!("  Registers: {} | Memories: {}", info.registers.len(), info.memories.len());
+                if !info.fsm_candidates.is_empty() {
+                    println!("  FSMs:      {}", info.fsm_candidates.join(", "));
+                }
+                if !info.detected_protocols.is_empty() {
+                    println!("  Protocols: {}", info.detected_protocols.join(", "));
+                }
+                println!(
+                    "  Props:     assert={} assume={} cover={} live={} fair={}",
+                    info.existing_properties.asserts,
+                    info.existing_properties.assumes,
+                    info.existing_properties.covers,
+                    info.existing_properties.live,
+                    info.existing_properties.fair
+                );
+                println!("  Recommended next checks:");
+                for cmd in &info.recommended_checks {
+                    println!("    - {cmd}");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Scaffold { src, output } => {
+            let module = src.compile_raw()?;
+            let vfc = scaffold_vfc_contract(&module);
+            if let Some(path) = output {
+                fs::write(&path, &vfc)?;
+                println!("Scaffolded starter `.vfc` contract to {}", path.display());
+            } else {
+                print!("{vfc}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Audit {
+            src,
+            spec,
+            min_mutation_score,
+            max_mutants,
+            depth,
+            solver,
+            format,
+        } => {
+            let mut module = src.compile_and_prepare()?;
+            if let Some(spec_path) = spec {
+                let text = fs::read_to_string(&spec_path)?;
+                let contract = parse_contract(&text)?;
+                let mut param_map: HashMap<String, i64> = HashMap::new();
+                for p in &src.params {
+                    if let Some((k, v)) = p.split_once('=') {
+                        if let Ok(n) = v.trim().parse::<i64>() {
+                            param_map.insert(k.trim().to_string(), n);
+                        }
+                    }
+                }
+                module = lower_contract_to_ir(&module, &contract, ContractRole::Provider, &param_map)?
+                    .module;
+            }
+            let report = run_trust_audit(
+                &module,
+                &TrustAuditConfig {
+                    depth,
+                    max_mutants,
+                    min_mutation_score,
+                    solver,
+                },
+            )?;
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                let verdict = if report.trustworthy {
+                    "TRUSTWORTHY"
+                } else {
+                    "REJECTED"
+                };
+                println!("AUDIT {verdict} — module `{}`", report.module_name);
+                println!("  Gate 1 [Safety Proof]:  {}", report.proof_status);
+                println!("  Gate 2 [Dead-Ends]:     {}", report.deadend_status);
+                println!(
+                    "  Gate 3 [Vacuity]:       {}",
+                    if report.vacuous_properties.is_empty() {
+                        "NON-VACUOUS".to_string()
+                    } else {
+                        format!("VACUOUS ({})", report.vacuous_properties.join(", "))
+                    }
+                );
+                println!(
+                    "  Gate 4 [Mutation]:      {}/{} killed ({:.1}%, threshold {:.1}%)",
+                    report.mutation_killed,
+                    report.mutation_total,
+                    report.mutation_score_pct,
+                    min_mutation_score
+                );
+                for issue in &report.issues {
+                    println!("  ISSUE: {issue}");
+                }
+                if let Some(tbl) = &report.failure_trace_table {
+                    println!("\n{tbl}");
+                }
+            }
+            Ok(if report.trustworthy {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
     }
 }

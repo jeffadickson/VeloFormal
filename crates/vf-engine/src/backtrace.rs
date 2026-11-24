@@ -1,8 +1,9 @@
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use vf_ir::{Module, PropertyKind, SignalKind};
 use vf_smt::solver::TraceFrame;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BacktraceEvent {
     pub cycle: usize,
     pub signal: String,
@@ -11,7 +12,7 @@ pub struct BacktraceEvent {
     pub new_val: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CexBacktrace {
     pub property: String,
     pub failing_cycle: usize,
@@ -172,4 +173,60 @@ impl CexBacktrace {
         }
         out
     }
+}
+
+/// Render a token-efficient Markdown cycle table of COI signals for LLM / coding-agent consumption
+/// (avoids sending massive raw VCD dumps into agent context windows).
+pub fn format_agent_trace_table(
+    m: &Module,
+    failed_prop: Option<&str>,
+    trace: &[TraceFrame],
+    max_signals: usize,
+) -> String {
+    if trace.is_empty() {
+        return String::new();
+    }
+    let bt = compute_cex_backtrace(m, failed_prop, trace);
+    let mut sigs: Vec<String> = if !bt.coi_signals.is_empty() {
+        bt.coi_signals
+    } else {
+        trace[0]
+            .values
+            .iter()
+            .filter(|(n, _)| !n.starts_with('$'))
+            .map(|(n, _)| n.clone())
+            .collect()
+    };
+    sigs.truncate(max_signals.max(1));
+
+    let mut out = String::new();
+    out.push_str("| cycle |");
+    for s in &sigs {
+        out.push_str(&format!(" {s} |"));
+    }
+    out.push('\n');
+    out.push_str("|---:|");
+    for _ in &sigs {
+        out.push_str("---:|");
+    }
+    out.push('\n');
+
+    for (t, frame) in trace.iter().enumerate() {
+        let map: HashMap<&str, &vf_ir::ConstBits> = frame
+            .values
+            .iter()
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        let mark = if t + 1 == trace.len() { "*" } else { "" };
+        out.push_str(&format!("| {t}{mark} |"));
+        for s in &sigs {
+            let cell = map
+                .get(s.as_str())
+                .map(|b| format_val(b))
+                .unwrap_or_else(|| "-".into());
+            out.push_str(&format!(" {cell} |"));
+        }
+        out.push('\n');
+    }
+    out
 }

@@ -36,14 +36,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build release binaries
-        run: cargo build --release --bin veloformal --bin vf-lsp
+        run: cargo build --release --bin veloformal --bin vf-lsp --bin vf-mcp
 
       - name: Package release archive
         run: |
-          mkdir -p dist/vip
-          cp target/release/veloformal target/release/vf-lsp dist/
+          mkdir -p dist/vip dist/skills
+          cp target/release/veloformal target/release/vf-lsp target/release/vf-mcp dist/
           cp -r vip/* dist/vip/
-          cp README.md LICENSE dist/
+          cp -r skills/* dist/skills/
+          cp README.md AGENTS.md LICENSE dist/
           tar -czf "${{ matrix.asset }}" -C dist .
 
       - name: Upload GitHub Release asset

@@ -1,0 +1,20 @@
+[package]
+name = "vf-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vf-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vf-apps = { path = "../vf-apps" }
+vf-dsl = { path = "../vf-dsl" }
+vf-engine = { path = "../vf-engine" }
+vf-ir = { path = "../vf-ir" }
+vf-slang = { path = "../vf-slang" }
+vf-smt = { path = "../vf-smt" }
