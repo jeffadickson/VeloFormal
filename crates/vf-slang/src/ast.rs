@@ -167,10 +167,33 @@ pub struct SeqElement {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct SeqRepetition {
+    pub kind: String,
+    pub min: u64,
+    pub max: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssertionExpr {
     Simple {
         expr: Expr,
+        #[serde(default)]
+        repetition: Option<SeqRepetition>,
+    },
+    SeqWithMatch {
+        expr: Box<AssertionExpr>,
+        #[serde(default)]
+        repetition: Option<SeqRepetition>,
+    },
+    FirstMatch {
+        expr: Box<AssertionExpr>,
+    },
+    Conditional {
+        cond: Expr,
+        if_expr: Box<AssertionExpr>,
+        #[serde(default)]
+        else_expr: Option<Box<AssertionExpr>>,
     },
     Clocking {
         clocking: TimingJson,

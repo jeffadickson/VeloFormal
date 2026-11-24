@@ -1,8 +1,8 @@
 # VeloFormal Examples
 
-Seventeen self-contained, verified SystemVerilog formal verification examples covering every SymbiYosys-class engine, Questa-class Formal App, and reusable `vip/` Formal Assertion Library checker.
+Nineteen self-contained, verified formal verification examples covering every SymbiYosys-class engine, Questa-class Formal App, `.vfc` v1.0 Contract DSL, industry-standard formats (SVA `bind`, SystemRDL, IP-XACT, SDC, Questa Tcl), and reusable `vip/` Formal Assertion Library checker.
 
-All examples are executed continuously in CI via [`crates/vf-cli/tests/examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs).
+All examples are executed continuously in CI via [`examples_suite.rs`](../crates/vf-cli/tests/examples_suite.rs) and [`dsl_and_standards.rs`](../crates/vf-cli/tests/dsl_and_standards.rs).
 
 | # | Example | Feature / App | Expected Result |
 |---|---------|---------------|-----------------|
@@ -23,6 +23,8 @@ All examples are executed continuously in CI via [`crates/vf-cli/tests/examples_
 | 15 | [`15_regcheck_uart_csr`](15_regcheck_uart_csr/) | Register Check CSR bank (RW, RO, W1C, W1S, WO, masks, non-aliasing) | All 16 checks `PASS` |
 | 16 | [`16_cdc_async_bridge`](16_cdc_async_bridge/) | CDC / RDC structural analysis + formal Gray-code verification (`--gray`) | Clean `SAFE`/`GRAY PROVED` & buggy hazards |
 | 17 | [`17_vacuity_detection`](17_vacuity_detection/) | PropCheck vacuity check catching assertions with unreachable guards | `NON-VACUOUS` & `VACUOUS` |
+| 18 | [`18_vfc_contracts`](18_vfc_contracts/) | `.vfc` v1.0 Contract DSL (counter, FIFO scoreboard, key vault security + xfree, `emit-sva`) | `PROVED`, `REACHED`, `SECURE`, `X-FREE` |
+| 19 | [`19_industry_standards`](19_industry_standards/) | IEEE 1800 SVA `bind`/`[*3]`/`until`, SystemRDL `.rdl`, IP-XACT `.xml`, SDC `.sdc`, Questa `.do` Tcl + SARIF/HTML | `PROVED` / `PASS` / `SAFE` |
 
 ## Commands
 
@@ -89,4 +91,18 @@ veloformal cdc examples/16_cdc_async_bridge/async_bridge_buggy.sv
 
 # 17: PropCheck Vacuity Detection
 veloformal vacuity examples/17_vacuity_detection/arbiter_vacuous.sv
+
+# 18: VeloFormal Contract DSL (.vfc v1.0) — Non-invasive RTL contracts + HTML dashboard + SVA export
+veloformal contract examples/18_vfc_contracts/counter.sv --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --vacuity --report signoff.html
+veloformal contract examples/18_vfc_contracts/fifo_rtl.sv --spec examples/18_vfc_contracts/fifo_contract.vfc
+veloformal contract examples/13_secure_key_vault/key_vault.sv --spec examples/18_vfc_contracts/key_vault.vfc
+veloformal emit-sva examples/18_vfc_contracts/counter.vfc --rtl examples/18_vfc_contracts/counter.sv -o counter_sva.sv
+veloformal fmt examples/18_vfc_contracts/counter.vfc --check
+
+# 19: Industry-Standard Questa Replacement (SVA bind/[*3]/until, SystemRDL, IP-XACT, SDC, Questa Tcl)
+veloformal prove examples/19_industry_standards/sva_bind_and_rep.sv --top pulse_stretcher
+veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19_industry_standards/uart_csr.rdl
+veloformal regcheck examples/15_regcheck_uart_csr/uart_csr.sv --spec examples/19_industry_standards/uart_csr.xml
+veloformal cdc examples/16_cdc_async_bridge/async_bridge_buggy.sv --sdc examples/19_industry_standards/async_bridge.sdc
+veloformal tcl examples/19_industry_standards/questa_signoff.do --format sarif --report signoff.html
 ```

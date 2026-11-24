@@ -77,12 +77,390 @@ pub struct RegCheckFinding {
     pub status: RegCheckStatus,
 }
 
+/// Auto-detect and parse a register specification from `.csv`, SystemRDL 2.0 (`.rdl`),
+/// or IEEE 1685 IP-XACT (`.xml`).
+pub fn parse_regmap_auto(path: &Path) -> Result<Vec<RegSpec>> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read register map {}", path.display()))?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "rdl" => parse_systemrdl_str(&text),
+        "xml" => parse_ipxact_str(&text),
+        _ => parse_regmap_str(&text),
+    }
+}
+
 /// Parse CSV register map:
 /// `name,addr,width,reset,access[,mask]`
 pub fn parse_regmap_csv(path: &Path) -> Result<Vec<RegSpec>> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read register map {}", path.display()))?;
-    parse_regmap_str(&text)
+    parse_regmap_auto(path)
+}
+
+/// Parse IEEE 1685 IP-XACT XML (`<ipxact:register>` or `<spirit:register>` or `<register>`).
+pub fn parse_ipxact_str(text: &str) -> Result<Vec<RegSpec>> {
+    let mut specs = Vec::new();
+    let mut rest = text;
+    while let Some((reg_body, after)) = extract_xml_tag(rest, "register") {
+        rest = after;
+        let name = extract_xml_text(reg_body, "name")
+            .ok_or_else(|| anyhow!("IP-XACT <register> missing <name>"))?;
+        let addr_s = extract_xml_text(reg_body, "addressOffset")
+            .ok_or_else(|| anyhow!("IP-XACT register '{name}' missing <addressOffset>"))?;
+        let addr = parse_sv_or_c_num(&addr_s)?;
+        let width: u32 = extract_xml_text(reg_body, "size")
+            .map(|s| parse_sv_or_c_num(&s))
+            .transpose()?
+            .unwrap_or(32) as u32;
+        let reg_reset = extract_xml_text(reg_body, "resetValue")
+            .or_else(|| extract_xml_text(reg_body, "value"))
+            .map(|s| parse_sv_or_c_num(&s))
+            .transpose()?
+            .unwrap_or(0);
+        let reg_access_str = extract_xml_text(reg_body, "access").unwrap_or_default();
+
+        // Parse <field> children if present to build exact bitmask, reset, and access policy.
+        let mut mask: u64 = 0;
+        let mut field_reset: u64 = 0;
+        let mut saw_field = false;
+        let mut access = map_ipxact_access(&reg_access_str, "");
+        let mut f_rest = reg_body;
+        while let Some((f_body, f_after)) = extract_xml_tag(f_rest, "field") {
+            f_rest = f_after;
+            saw_field = true;
+            let bit_off = extract_xml_text(f_body, "bitOffset")
+                .map(|s| parse_sv_or_c_num(&s))
+                .transpose()?
+                .unwrap_or(0) as u32;
+            let bit_w = extract_xml_text(f_body, "bitWidth")
+                .map(|s| parse_sv_or_c_num(&s))
+                .transpose()?
+                .unwrap_or(1) as u32;
+            let f_mask = if bit_w >= 64 {
+                u64::MAX
+            } else {
+                ((1u64 << bit_w) - 1) << bit_off
+            };
+            mask |= f_mask;
+            if let Some(rv) = extract_xml_text(f_body, "resetValue")
+                .or_else(|| extract_xml_text(f_body, "value"))
+            {
+                let v = parse_sv_or_c_num(&rv)?;
+                field_reset |= (v << bit_off) & f_mask;
+            }
+            let fa = extract_xml_text(f_body, "access").unwrap_or_else(|| reg_access_str.clone());
+            let mwv = extract_xml_text(f_body, "modifiedWriteValue").unwrap_or_default();
+            access = map_ipxact_access(&fa, &mwv);
+        }
+
+        let full_mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
+        };
+        if !saw_field {
+            mask = full_mask;
+        }
+        let reset = if reg_reset != 0 { reg_reset } else { field_reset };
+        specs.push(RegSpec {
+            name,
+            addr,
+            width,
+            reset: reset & full_mask,
+            access,
+            mask: mask & full_mask,
+        });
+    }
+    if specs.is_empty() {
+        bail!("IP-XACT XML contained no <register> definitions");
+    }
+    Ok(specs)
+}
+
+fn map_ipxact_access(access: &str, mod_write: &str) -> AccessPolicy {
+    match mod_write.trim().to_ascii_lowercase().as_str() {
+        "onetoclear" | "w1c" => return AccessPolicy::W1c,
+        "onetoset" | "w1s" => return AccessPolicy::W1s,
+        _ => {}
+    }
+    match access.trim().to_ascii_lowercase().as_str() {
+        "read-only" | "ro" => AccessPolicy::Ro,
+        "write-only" | "wo" => AccessPolicy::Wo,
+        "read-write" | "rw" | "" => AccessPolicy::Rw,
+        _ => AccessPolicy::Rw,
+    }
+}
+
+fn extract_xml_tag<'a>(src: &'a str, local_name: &str) -> Option<(&'a str, &'a str)> {
+    // Match `<local_name ...>` or `<prefix:local_name ...>` and find matching `</...local_name>`.
+    let mut search_from = 0;
+    while let Some(rel) = src[search_from..].find('<') {
+        let start = search_from + rel;
+        let after_lt = &src[start + 1..];
+        if after_lt.starts_with('/') || after_lt.starts_with('!') || after_lt.starts_with('?') {
+            search_from = start + 1;
+            continue;
+        }
+        let tag_end = after_lt.find('>')?;
+        let tag_hdr = &after_lt[..tag_end];
+        let tag_name = tag_hdr.split_whitespace().next().unwrap_or("");
+        let stripped = tag_name.rsplit(':').next().unwrap_or(tag_name);
+        if stripped == local_name {
+            let body_start = start + 1 + tag_end + 1;
+            let close_pat1 = format!("</{tag_name}>");
+            let close_pat2 = format!("</{local_name}>");
+            if let Some(rel_end) = src[body_start..].find(&close_pat1) {
+                let body_end = body_start + rel_end;
+                return Some((&src[body_start..body_end], &src[body_end + close_pat1.len()..]));
+            }
+            if let Some(rel_end) = src[body_start..].find(&close_pat2) {
+                let body_end = body_start + rel_end;
+                return Some((&src[body_start..body_end], &src[body_end + close_pat2.len()..]));
+            }
+            return None;
+        }
+        search_from = start + 1;
+    }
+    None
+}
+
+fn extract_xml_text(src: &str, local_name: &str) -> Option<String> {
+    let (body, _) = extract_xml_tag(src, local_name)?;
+    Some(body.trim().to_string())
+}
+
+/// Parse SystemRDL 2.0 (`.rdl`) `reg { ... } NAME @ 0xADDR;` blocks.
+pub fn parse_systemrdl_str(text: &str) -> Result<Vec<RegSpec>> {
+    let cleaned = strip_c_comments(text);
+    let mut specs = Vec::new();
+    let mut i = 0usize;
+    let bytes = cleaned.as_bytes();
+
+    while i < bytes.len() {
+        // Look for standalone keyword `reg` followed by `{`.
+        if let Some(rel) = cleaned[i..].find("reg") {
+            let pos = i + rel;
+            let before_ok = pos == 0
+                || !(bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
+            let after_pos = pos + 3;
+            let after_ok = after_pos < bytes.len()
+                && !(bytes[after_pos].is_ascii_alphanumeric() || bytes[after_pos] == b'_');
+            if !before_ok || !after_ok {
+                i = after_pos;
+                continue;
+            }
+            let tail = cleaned[after_pos..].trim_start();
+            // Optional named reg type before `{`: `reg my_t { ... }` or anonymous `reg { ... }`
+            let Some(brace_off) = tail.find('{') else {
+                i = after_pos;
+                continue;
+            };
+            let between = tail[..brace_off].trim();
+            if between.contains(';') || between.contains('=') {
+                i = after_pos;
+                continue;
+            }
+            let body_start = cleaned.len() - tail.len() + brace_off + 1;
+            let Some(body_end) = find_matching_brace(&cleaned, body_start) else {
+                bail!("unterminated SystemRDL `reg {{ ... }}` block");
+            };
+            let reg_body = &cleaned[body_start..body_end];
+            let post = &cleaned[body_end + 1..];
+            let Some(semi) = post.find(';') else {
+                bail!("expected `;` after SystemRDL `reg {{ ... }}` declaration");
+            };
+            let decl = post[..semi].trim();
+            // Parse `NAME @ 0xADDR`
+            if let Some((name_part, addr_part)) = decl.split_once('@') {
+                let name = name_part.trim().to_string();
+                let addr = parse_sv_or_c_num(addr_part.trim())?;
+                specs.push(parse_rdl_reg_body(&name, addr, reg_body)?);
+            }
+            i = body_end + 1 + semi + 1;
+        } else {
+            break;
+        }
+    }
+
+    if specs.is_empty() {
+        bail!("SystemRDL input contained no `reg {{ ... }} NAME @ ADDR;` definitions");
+    }
+    Ok(specs)
+}
+
+fn parse_rdl_reg_body(name: &str, addr: u64, body: &str) -> Result<RegSpec> {
+    let mut width: u32 = 32;
+    for stmt in body.split(';') {
+        let s = stmt.trim();
+        if let Some(rhs) = s.strip_prefix("regwidth") {
+            if let Some(val) = rhs.trim().strip_prefix('=') {
+                width = parse_sv_or_c_num(val.trim())? as u32;
+            }
+        }
+    }
+
+    let mut mask: u64 = 0;
+    let mut reset: u64 = 0;
+    let mut access = AccessPolicy::Rw;
+    let mut saw_field = false;
+
+    let mut pos = 0usize;
+    while let Some(rel) = body[pos..].find("field") {
+        let fpos = pos + rel;
+        let after = fpos + 5;
+        let tail = body[after..].trim_start();
+        let Some(boff) = tail.find('{') else {
+            pos = after;
+            continue;
+        };
+        let fbody_start = body.len() - tail.len() + boff + 1;
+        let Some(fbody_end) = find_matching_brace(body, fbody_start) else {
+            bail!("unterminated SystemRDL `field {{ ... }}` in register '{name}'");
+        };
+        let fbody = &body[fbody_start..fbody_end];
+        let post = &body[fbody_end + 1..];
+        let Some(semi) = post.find(';') else {
+            bail!("missing `;` after SystemRDL field in register '{name}'");
+        };
+        let fdecl = post[..semi].trim();
+        saw_field = true;
+
+        // Parse bit range `[hi:lo]` or `[bit]` and optional `= reset_val`
+        let (hi, lo, inline_reset) = parse_rdl_field_decl(fdecl)?;
+        let bw = hi - lo + 1;
+        let fmask = if bw >= 64 {
+            u64::MAX
+        } else {
+            ((1u64 << bw) - 1) << lo
+        };
+        mask |= fmask;
+
+        let mut f_reset = inline_reset;
+        let mut sw = String::new();
+        let mut onwrite = String::new();
+        for prop in fbody.split(';') {
+            let p = prop.trim();
+            if let Some((k, v)) = p.split_once('=') {
+                match k.trim() {
+                    "reset" => f_reset = Some(parse_sv_or_c_num(v.trim())?),
+                    "sw" => sw = v.trim().to_ascii_lowercase(),
+                    "onwrite" => onwrite = v.trim().to_ascii_lowercase(),
+                    _ => {}
+                }
+            }
+        }
+        if let Some(rv) = f_reset {
+            reset |= (rv << lo) & fmask;
+        }
+        access = match onwrite.as_str() {
+            "woclr" => AccessPolicy::W1c,
+            "woset" => AccessPolicy::W1s,
+            _ => match sw.as_str() {
+                "r" => AccessPolicy::Ro,
+                "w" => AccessPolicy::Wo,
+                _ => AccessPolicy::Rw,
+            },
+        };
+
+        pos = fbody_end + 1 + semi + 1;
+    }
+
+    let full_mask = if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    };
+    if !saw_field {
+        mask = full_mask;
+    }
+    Ok(RegSpec {
+        name: name.to_string(),
+        addr,
+        width,
+        reset: reset & full_mask,
+        access,
+        mask: mask & full_mask,
+    })
+}
+
+fn parse_rdl_field_decl(decl: &str) -> Result<(u32, u32, Option<u64>)> {
+    let (lhs, inline_reset) = if let Some((l, r)) = decl.split_once('=') {
+        (l.trim(), Some(parse_sv_or_c_num(r.trim())?))
+    } else {
+        (decl.trim(), None)
+    };
+    if let (Some(lb), Some(rb)) = (lhs.find('['), lhs.find(']')) {
+        let range = lhs[lb + 1..rb].trim();
+        if let Some((a, b)) = range.split_once(':') {
+            let hi = a.trim().parse::<u32>()?;
+            let lo = b.trim().parse::<u32>()?;
+            return Ok((hi.max(lo), hi.min(lo), inline_reset));
+        }
+        let bit = range.parse::<u32>()?;
+        return Ok((bit, bit, inline_reset));
+    }
+    Ok((0, 0, inline_reset))
+}
+
+fn find_matching_brace(s: &str, open_body_start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (off, ch) in s[open_body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open_body_start + off);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_c_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn parse_sv_or_c_num(s: &str) -> Result<u64> {
+    let clean = s.trim().replace('_', "");
+    if let Some((_, rhs)) = clean.split_once('\'') {
+        let rhs = rhs.trim();
+        let (base, digits) = if let Some(d) = rhs.strip_prefix('h').or_else(|| rhs.strip_prefix('H')) {
+            (16, d)
+        } else if let Some(d) = rhs.strip_prefix('d').or_else(|| rhs.strip_prefix('D')) {
+            (10, d)
+        } else if let Some(d) = rhs.strip_prefix('b').or_else(|| rhs.strip_prefix('B')) {
+            (2, d)
+        } else {
+            (10, rhs)
+        };
+        return u64::from_str_radix(digits, base).map_err(|e| anyhow!("invalid literal '{s}': {e}"));
+    }
+    parse_num(&clean)
 }
 
 pub fn parse_regmap_str(text: &str) -> Result<Vec<RegSpec>> {

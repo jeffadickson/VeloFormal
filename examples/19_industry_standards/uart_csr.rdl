@@ -1,0 +1,32 @@
+// Industry-Standard SystemRDL 2.0 Register Map for examples/15_regcheck_uart_csr/uart_csr.sv
+addrmap uart_csr_map {
+    reg {
+        regwidth = 32;
+        field { sw = rw; reset = 8'h01; } ctrl[7:0];
+    } CTRL @ 0x00;
+
+    reg {
+        regwidth = 32;
+        field { sw = r; reset = 32'h0001_0203; } version[31:0];
+    } VERSION @ 0x04;
+
+    reg {
+        regwidth = 32;
+        field { sw = rw; onwrite = woclr; reset = 4'hF; } irq_status[3:0];
+    } IRQ_STATUS @ 0x08;
+
+    reg {
+        regwidth = 32;
+        field { sw = rw; onwrite = woset; reset = 4'h0; } irq_enable[3:0];
+    } IRQ_ENABLE @ 0x0C;
+
+    reg {
+        regwidth = 32;
+        field { sw = w; reset = 32'h0; } tx_kick[31:0];
+    } TX_KICK @ 0x10;
+
+    reg {
+        regwidth = 32;
+        field { sw = rw; reset = 16'h006C; } baud_div[15:0];
+    } BAUD_DIV @ 0x14;
+};

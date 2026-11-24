@@ -479,13 +479,69 @@ public:
         jw.endObject();
     }
 
+    void emitRepetition(const SequenceRepetition& rep) {
+        jw.startObject();
+        std::string rk = "consecutive";
+        if (rep.kind == SequenceRepetition::Nonconsecutive) rk = "nonconsecutive";
+        else if (rep.kind == SequenceRepetition::GoTo) rk = "goto";
+        jw.writeProperty("kind"); jw.writeValue(rk);
+        jw.writeProperty("min"); jw.writeValue(static_cast<uint64_t>(rep.range.min));
+        if (rep.range.max.has_value()) {
+            jw.writeProperty("max"); jw.writeValue(static_cast<uint64_t>(*rep.range.max));
+        }
+        jw.endObject();
+    }
+
     void emitAssertionExpr(const AssertionExpr& ae) {
+        if (ae.kind == AssertionExprKind::Simple) {
+            auto& s = ae.as<SimpleAssertionExpr>();
+            if (auto* inst = s.expr.as_if<AssertionInstanceExpression>()) {
+                if (s.repetition.has_value()) {
+                    jw.startObject();
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("seq_with_match"));
+                    jw.writeProperty("expr"); emitAssertionExpr(inst->body);
+                    jw.writeProperty("repetition"); emitRepetition(*s.repetition);
+                    jw.endObject();
+                } else {
+                    emitAssertionExpr(inst->body);
+                }
+                return;
+            }
+        }
         jw.startObject();
         switch (ae.kind) {
             case AssertionExprKind::Simple: {
                 auto& s = ae.as<SimpleAssertionExpr>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("simple"));
                 jw.writeProperty("expr"); emitExpr(s.expr);
+                if (s.repetition.has_value()) {
+                    jw.writeProperty("repetition"); emitRepetition(*s.repetition);
+                }
+                break;
+            }
+            case AssertionExprKind::SequenceWithMatch: {
+                auto& sm = ae.as<SequenceWithMatchExpr>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("seq_with_match"));
+                jw.writeProperty("expr"); emitAssertionExpr(sm.expr);
+                if (sm.repetition.has_value()) {
+                    jw.writeProperty("repetition"); emitRepetition(*sm.repetition);
+                }
+                break;
+            }
+            case AssertionExprKind::FirstMatch: {
+                auto& fm = ae.as<FirstMatchAssertionExpr>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("first_match"));
+                jw.writeProperty("expr"); emitAssertionExpr(fm.seq);
+                break;
+            }
+            case AssertionExprKind::Conditional: {
+                auto& ca = ae.as<ConditionalAssertionExpr>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("conditional"));
+                jw.writeProperty("cond"); emitExpr(ca.condition);
+                jw.writeProperty("if_expr"); emitAssertionExpr(ca.ifExpr);
+                if (ca.elseExpr) {
+                    jw.writeProperty("else_expr"); emitAssertionExpr(*ca.elseExpr);
+                }
                 break;
             }
             case AssertionExprKind::Clocking: {

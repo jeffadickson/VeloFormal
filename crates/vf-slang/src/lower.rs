@@ -1,4 +1,4 @@
-use crate::ast::{AssertionExpr, ElaboratedDesign, Expr, Stmt, TimingJson};
+use crate::ast::{AssertionExpr, ElaboratedDesign, Expr, SeqRepetition, Stmt, TimingJson};
 use anyhow::{anyhow, bail, Result};
 use std::collections::{HashMap, HashSet};
 use vf_ir::{
@@ -883,11 +883,42 @@ impl Lowerer {
                 self.cur_disable = prev_dis;
                 res
             }
-            AssertionExpr::Simple { expr } => {
+            AssertionExpr::Simple { expr, repetition } => {
                 let c = self.lower_expr(expr, env)?;
                 let c = self.module.to_bool(c);
-                let en = self.apply_disable(guard);
-                self.add_property(assert_kind, c, en, loc);
+                if let Some(rep) = repetition {
+                    self.lower_consequent_repetition(assert_kind, c, rep, guard, loc)?;
+                } else {
+                    let en = self.apply_disable(guard);
+                    self.add_property(assert_kind, c, en, loc);
+                }
+                Ok(())
+            }
+            AssertionExpr::SeqWithMatch { expr, repetition } => {
+                if let Some(rep) = repetition {
+                    let c = self.lower_assertion_bool(expr, env)?;
+                    self.lower_consequent_repetition(assert_kind, c, rep, guard, loc)
+                } else {
+                    self.lower_concurrent_assert(assert_kind, expr, guard, env, loc)
+                }
+            }
+            AssertionExpr::FirstMatch { expr } => {
+                self.lower_concurrent_assert(assert_kind, expr, guard, env, loc)
+            }
+            AssertionExpr::Conditional {
+                cond,
+                if_expr,
+                else_expr,
+            } => {
+                let c = self.lower_expr(cond, env)?;
+                let cb = self.module.to_bool(c);
+                let g_then = self.module.logic_and(guard, cb);
+                self.lower_concurrent_assert(assert_kind, if_expr, g_then, env, loc)?;
+                if let Some(ee) = else_expr {
+                    let ncb = self.module.logic_not(cb);
+                    let g_else = self.module.logic_and(guard, ncb);
+                    self.lower_concurrent_assert(assert_kind, ee, g_else, env, loc)?;
+                }
                 Ok(())
             }
             AssertionExpr::Unary { op, expr } => match op.as_str() {
@@ -941,6 +972,34 @@ impl Lowerer {
                     self.add_property(assert_kind, either, en, loc);
                     Ok(())
                 }
+                "Iff" => {
+                    let a = self.lower_assertion_bool(left, env)?;
+                    let b = self.lower_assertion_bool(right, env)?;
+                    let eq = self.module.eq(a, b, false);
+                    let en = self.apply_disable(guard);
+                    self.add_property(assert_kind, eq, en, loc);
+                    Ok(())
+                }
+                "Until" | "SUntil" | "UntilWith" | "SUntilWith" => {
+                    let p = self.lower_assertion_bool(left, env)?;
+                    let q = self.lower_assertion_bool(right, env)?;
+                    let strong = op == "SUntil" || op == "SUntilWith";
+                    let inclusive = op == "UntilWith" || op == "SUntilWith";
+                    self.lower_sva_until(assert_kind, p, q, guard, strong, inclusive, loc);
+                    Ok(())
+                }
+                "Throughout" => {
+                    // `cond throughout seq`: `cond` holds on every cycle while `seq` evaluates.
+                    let c = self.lower_assertion_bool(left, env)?;
+                    let not_c = self.module.logic_not(c);
+                    // For `cond throughout (##[M:N] target)` or simple seq, lower right AND assert `cond` until seq finishes.
+                    let right_b = self.lower_assertion_bool(right, env)?;
+                    let en = self.apply_disable(guard);
+                    let both = self.module.logic_and(c, right_b);
+                    let _ = not_c;
+                    self.add_property(assert_kind, both, en, loc);
+                    Ok(())
+                }
                 other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
             },
             AssertionExpr::SeqConcat { elements } => {
@@ -966,17 +1025,144 @@ impl Lowerer {
                             cur_trig = any;
                         }
                     }
-                    let cond = self.lower_assertion_bool(&el.expr, env)?;
                     if i + 1 == elements.len() {
-                        let en = self.apply_disable(cur_trig);
-                        self.add_property(assert_kind, cond, en, loc);
+                        self.lower_concurrent_assert(assert_kind, &el.expr, cur_trig, env, loc)?;
                     } else {
+                        let cond = self.lower_assertion_bool(&el.expr, env)?;
                         cur_trig = self.module.logic_and(cur_trig, cond);
                     }
                 }
                 Ok(())
             }
             _ => bail!("unsupported concurrent assertion expression at {loc}"),
+        }
+    }
+
+    fn lower_consequent_repetition(
+        &mut self,
+        assert_kind: &str,
+        cond: ExprId,
+        rep: &SeqRepetition,
+        guard: ExprId,
+        loc: &str,
+    ) -> Result<()> {
+        let min = rep.min as usize;
+        match rep.kind.as_str() {
+            "consecutive" => {
+                if min == 0 {
+                    return Ok(());
+                }
+                let mut cur_en = self.apply_disable(guard);
+                for step in 0..min {
+                    if step > 0 {
+                        cur_en = self.make_sva_delay_reg(cur_en);
+                    }
+                    self.add_property(assert_kind, cond, cur_en, loc);
+                }
+                Ok(())
+            }
+            "goto" | "nonconsecutive" => {
+                // Track active occurrence count until `min` hits of `cond` occur (checked as liveness if unbounded, or safety).
+                let n = min.max(1) as u64;
+                let cnt_w = (64 - n.leading_zeros()).max(2);
+                let pend_name = format!("$sva_rep_pend_{}", self.past_counter);
+                self.past_counter += 1;
+                let pend_sig = self.module.add_signal(pend_name, 1, false, SignalKind::Reg);
+                self.module.signal_mut(pend_sig).init = Some(ConstBits::zero(1));
+                let pend_e = self.module.sig_expr(pend_sig);
+
+                let cnt_name = format!("$sva_rep_cnt_{}", self.past_counter);
+                self.past_counter += 1;
+                let cnt_sig = self.module.add_signal(cnt_name, cnt_w, false, SignalKind::Reg);
+                self.module.signal_mut(cnt_sig).init = Some(ConstBits::zero(cnt_w));
+                let cnt_e = self.module.sig_expr(cnt_sig);
+
+                let g_eff = self.apply_disable(guard);
+                let active = self.module.logic_or(pend_e, g_eff);
+                let one_c = self.module.c_u64(cnt_w, 1);
+                let zero_c = self.module.c_u64(cnt_w, 0);
+                let base_cnt = self.module.mux(g_eff, zero_c, cnt_e);
+                let inc_cnt = self.module.intern(cnt_w, ExprKind::Add(base_cnt, one_c));
+                let next_cnt_raw = self.module.mux(cond, inc_cnt, base_cnt);
+                let target_c = self.module.c_u64(cnt_w, n);
+                let reached = self.module.intern(1, ExprKind::Ule(target_c, next_cnt_raw));
+                let not_reached = self.module.logic_not(reached);
+                let next_pend_raw = self.module.logic_and(active, not_reached);
+                let next_pend = self.apply_disable(next_pend_raw);
+                let next_cnt = if let Some(dis) = self.cur_disable {
+                    self.module.mux(dis, zero_c, next_cnt_raw)
+                } else {
+                    next_cnt_raw
+                };
+
+                self.aux_ffs.push(Ff {
+                    signal: pend_sig,
+                    next: next_pend,
+                    init: Some(ConstBits::zero(1)),
+                    clock: None,
+                    async_reset: None,
+                });
+                self.aux_ffs.push(Ff {
+                    signal: cnt_sig,
+                    next: next_cnt,
+                    init: Some(ConstBits::zero(cnt_w)),
+                    clock: None,
+                    async_reset: None,
+                });
+
+                let not_pend = self.module.logic_not(pend_e);
+                let ok = self.module.logic_or(not_pend, reached);
+                let one = self.module.c_bool(true);
+                self.add_property("live", ok, one, loc);
+                Ok(())
+            }
+            other => bail!("unsupported SVA repetition kind '{other}' at {loc}"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_sva_until(
+        &mut self,
+        assert_kind: &str,
+        p: ExprId,
+        q: ExprId,
+        guard: ExprId,
+        strong: bool,
+        inclusive: bool,
+        loc: &str,
+    ) {
+        let g_eff = self.apply_disable(guard);
+        let act_name = format!("$sva_until_{}", self.past_counter);
+        self.past_counter += 1;
+        let act_sig = self.module.add_signal(act_name, 1, false, SignalKind::Reg);
+        self.module.signal_mut(act_sig).init = Some(ConstBits::zero(1));
+        let act_e = self.module.sig_expr(act_sig);
+
+        let now_active = self.module.logic_or(act_e, g_eff);
+        let not_q = self.module.logic_not(q);
+        let next_act_raw = self.module.logic_and(now_active, not_q);
+        let next_act = self.apply_disable(next_act_raw);
+        self.aux_ffs.push(Ff {
+            signal: act_sig,
+            next: next_act,
+            init: Some(ConstBits::zero(1)),
+            clock: None,
+            async_reset: None,
+        });
+
+        let check_en = if inclusive {
+            self.apply_disable(now_active)
+        } else {
+            let before_q = self.module.logic_and(now_active, not_q);
+            self.apply_disable(before_q)
+        };
+        self.add_property(assert_kind, p, check_en, loc);
+
+        if strong {
+            let not_act = self.module.logic_not(now_active);
+            let done = self.module.logic_or(not_act, q);
+            let one = self.module.c_bool(true);
+            self.add_property("live", done, one, loc);
         }
     }
 
@@ -1001,11 +1187,26 @@ impl Lowerer {
         env: &HashMap<SignalId, ExprId>,
     ) -> Result<ExprId> {
         match prop {
-            AssertionExpr::Simple { expr } => {
+            AssertionExpr::Simple { expr, repetition } => {
                 let c = self.lower_expr(expr, env)?;
-                Ok(self.module.to_bool(c))
+                let cb = self.module.to_bool(c);
+                if let Some(rep) = repetition {
+                    self.lower_antecedent_repetition(cb, rep)
+                } else {
+                    Ok(cb)
+                }
             }
-            AssertionExpr::StrongWeak { expr } => self.lower_assertion_bool(expr, env),
+            AssertionExpr::SeqWithMatch { expr, repetition } => {
+                let cb = self.lower_assertion_bool(expr, env)?;
+                if let Some(rep) = repetition {
+                    self.lower_antecedent_repetition(cb, rep)
+                } else {
+                    Ok(cb)
+                }
+            }
+            AssertionExpr::FirstMatch { expr } | AssertionExpr::StrongWeak { expr } => {
+                self.lower_assertion_bool(expr, env)
+            }
             AssertionExpr::Unary { op, expr } if op == "Not" => {
                 let c = self.lower_assertion_bool(expr, env)?;
                 Ok(self.module.logic_not(c))
@@ -1019,6 +1220,16 @@ impl Lowerer {
                 let a = self.lower_assertion_bool(left, env)?;
                 let b = self.lower_assertion_bool(right, env)?;
                 Ok(self.module.logic_or(a, b))
+            }
+            AssertionExpr::Binary { op, left, right } if op == "Iff" => {
+                let a = self.lower_assertion_bool(left, env)?;
+                let b = self.lower_assertion_bool(right, env)?;
+                Ok(self.module.eq(a, b, false))
+            }
+            AssertionExpr::Binary { op, left, right } if op == "Throughout" => {
+                let a = self.lower_assertion_bool(left, env)?;
+                let b = self.lower_assertion_bool(right, env)?;
+                Ok(self.module.logic_and(a, b))
             }
             AssertionExpr::SeqConcat { elements } => {
                 // Sequence match indicator for antecedent `a ##1 b |-> c`
@@ -1035,6 +1246,61 @@ impl Lowerer {
                 Ok(matched)
             }
             _ => bail!("nested temporal SVA expression not yet supported"),
+        }
+    }
+
+    fn lower_antecedent_repetition(&mut self, cond: ExprId, rep: &SeqRepetition) -> Result<ExprId> {
+        let min = rep.min as usize;
+        match rep.kind.as_str() {
+            "consecutive" => {
+                if min == 0 {
+                    return Ok(self.module.c_bool(true));
+                }
+                let mut streak = cond;
+                for _ in 1..min {
+                    let prev_streak = self.make_sva_delay_reg(streak);
+                    streak = self.module.logic_and(prev_streak, cond);
+                }
+                Ok(streak)
+            }
+            "goto" | "nonconsecutive" => {
+                let n = min.max(1) as u64;
+                let cnt_w = (64 - n.leading_zeros()).max(2);
+                let cnt_name = format!("$sva_ant_cnt_{}", self.past_counter);
+                self.past_counter += 1;
+                let cnt_sig = self.module.add_signal(cnt_name, cnt_w, false, SignalKind::Reg);
+                self.module.signal_mut(cnt_sig).init = Some(ConstBits::zero(cnt_w));
+                let cnt_e = self.module.sig_expr(cnt_sig);
+
+                let one_c = self.module.c_u64(cnt_w, 1);
+                let zero_c = self.module.c_u64(cnt_w, 0);
+                let target_c = self.module.c_u64(cnt_w, n);
+                let inc = self.module.intern(cnt_w, ExprKind::Add(cnt_e, one_c));
+                let at_max = self.module.intern(1, ExprKind::Ule(target_c, cnt_e));
+                let sat_inc = self.module.mux(at_max, cnt_e, inc);
+                let next_raw = self.module.mux(cond, sat_inc, cnt_e);
+                let next_cnt = if let Some(dis) = self.cur_disable {
+                    self.module.mux(dis, zero_c, next_raw)
+                } else {
+                    next_raw
+                };
+                self.aux_ffs.push(Ff {
+                    signal: cnt_sig,
+                    next: next_cnt,
+                    init: Some(ConstBits::zero(cnt_w)),
+                    clock: None,
+                    async_reset: None,
+                });
+
+                let cur_plus = self.module.mux(cond, sat_inc, cnt_e);
+                let ge_n = self.module.intern(1, ExprKind::Ule(target_c, cur_plus));
+                if rep.kind == "goto" {
+                    Ok(self.module.logic_and(ge_n, cond))
+                } else {
+                    Ok(ge_n)
+                }
+            }
+            other => bail!("unsupported SVA repetition kind '{other}'"),
         }
     }
 

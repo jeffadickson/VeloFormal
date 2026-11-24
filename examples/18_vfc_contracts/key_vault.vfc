@@ -1,0 +1,9 @@
+// VeloFormal Contract (.vfc) v1.0 — Combining Security (IFT) + X-Check on key_vault
+contract KeyVaultPolicy for key_vault {
+    clock posedge clk;
+    reset when rst;
+
+    xfree telemetry_out, jtag_rdata;
+    secure root_key -> telemetry_out;
+    secure root_key -> jtag_rdata unless jtag_unlocked && auth_ok;
+}

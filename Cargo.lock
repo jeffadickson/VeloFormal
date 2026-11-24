@@ -241,11 +241,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
+ "serde_json",
  "vf-apps",
+ "vf-dsl",
  "vf-engine",
  "vf-ir",
  "vf-slang",
  "vf-smt",
+]
+
+[[package]]
+name = "vf-dsl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "vf-ir",
 ]
 
 [[package]]

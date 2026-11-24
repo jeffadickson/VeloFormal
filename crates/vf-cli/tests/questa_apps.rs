@@ -341,6 +341,7 @@ fn cdc_detects_crossings_rdc_and_verifies_gray_code() {
         &raw,
         &CdcConfig {
             gray_signals: vec!["gray_cnt".into(), "bin_cnt".into()],
+            sdc: None,
             depth: 12,
             solver: "z3".into(),
             use_pdr: true,

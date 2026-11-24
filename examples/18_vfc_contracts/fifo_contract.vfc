@@ -1,0 +1,13 @@
+// VeloFormal Contract (.vfc) v1.0 — End-to-End FIFO Data Integrity via built-in scoreboard & ghost state
+contract FifoIntegrity for fifo_rtl {
+    clock posedge clk;
+    reset when rst;
+
+    invariant not_full_and_empty: !(full && empty);
+
+    // Built-in reusable $anyconst data-integrity scoreboard!
+    use fifo_scoreboard(wr_en, wr_data, rd_en, rd_data, full, empty, 4);
+
+    // Cover reaching full and draining back to empty
+    cover reaches_full: full;
+}

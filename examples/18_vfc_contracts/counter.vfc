@@ -1,0 +1,18 @@
+// VeloFormal Contract Language (.vfc) v1.0 — Non-invasive counter safety contract
+contract CounterSafety for counter_rtl {
+    parameter MAX_VAL: int where MAX_VAL > 0;
+    clock posedge clk;
+    reset when rst;
+
+    require bounded_enable: !enable || unsigned(count) < MAX_VAL;
+
+    invariant bounded: unsigned(count) <= MAX_VAL;
+    invariant holds_when_idle: !prev(enable) => stable(count);
+
+    operation increment when enable {
+        ensure advances after 1 cycles:
+            count == at_trigger(count) + 1;
+    }
+
+    cover reaches_max: unsigned(count) == MAX_VAL;
+}

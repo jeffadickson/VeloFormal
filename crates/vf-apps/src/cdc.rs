@@ -1,5 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 use vf_engine::kind::{run_kinduction, ProveConfig, ProveOutcome};
 use vf_engine::pdr::{run_pdr, PdrConfig};
 use vf_ir::{
@@ -8,10 +10,121 @@ use vf_ir::{
 };
 use vf_smt::solver::TraceFrame;
 
+#[derive(Debug, Clone, Default)]
+pub struct SdcConstraints {
+    /// Clock port name -> period (ns) from `create_clock`.
+    pub clocks: HashMap<String, f64>,
+    /// Asynchronous clock groups from `set_clock_groups -asynchronous`.
+    pub async_groups: Vec<Vec<String>>,
+    /// Waived clock-to-clock false paths `(src_clk, dst_clk)` from `set_false_path`.
+    pub false_paths: Vec<(String, String)>,
+}
+
+impl SdcConstraints {
+    pub fn is_false_path(&self, src_clk: &str, dst_clk: &str) -> bool {
+        self.false_paths
+            .iter()
+            .any(|(a, b)| (a == src_clk && b == dst_clk) || (a == "*" && b == dst_clk) || (a == src_clk && b == "*"))
+    }
+}
+
+pub fn parse_sdc_file(path: &Path) -> Result<SdcConstraints> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("failed to read SDC file {}", path.display()))?;
+    Ok(parse_sdc_str(&text))
+}
+
+pub fn parse_sdc_str(text: &str) -> SdcConstraints {
+    let mut sdc = SdcConstraints::default();
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("create_clock") {
+            let period = extract_flag_val(line, "-period")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(10.0);
+            if let Some(port) = extract_bracket_arg(line, "get_ports")
+                .or_else(|| extract_flag_val(line, "-name"))
+            {
+                for tok in port.split_whitespace() {
+                    sdc.clocks.insert(tok.trim_matches(&['{', '}'][..]).to_string(), period);
+                }
+            }
+        } else if line.starts_with("set_clock_groups") && line.contains("-async") {
+            let mut rest = line;
+            while let Some(pos) = rest.find("-group") {
+                rest = rest[pos + 6..].trim_start();
+                let group_str = if let Some(after) = rest.strip_prefix('{') {
+                    if let Some(end) = after.find('}') {
+                        let inner = &after[..end];
+                        rest = &after[end + 1..];
+                        inner
+                    } else {
+                        break;
+                    }
+                } else {
+                    let tok = rest.split_whitespace().next().unwrap_or("");
+                    rest = &rest[tok.len()..];
+                    tok
+                };
+                let clks: Vec<String> = group_str
+                    .replace("[get_clocks", "")
+                    .replace(']', "")
+                    .split_whitespace()
+                    .map(|s| s.trim_matches(&['{', '}'][..]).to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !clks.is_empty() {
+                    sdc.async_groups.push(clks);
+                }
+            }
+        } else if line.starts_with("set_false_path") {
+            let from = extract_flag_clock(line, "-from");
+            let to = extract_flag_clock(line, "-to");
+            if let (Some(f), Some(t)) = (from, to) {
+                sdc.false_paths.push((f, t));
+            }
+        }
+    }
+    sdc
+}
+
+fn extract_flag_val(line: &str, flag: &str) -> Option<String> {
+    let pos = line.find(flag)?;
+    let rest = line[pos + flag.len()..].trim_start();
+    let tok = rest.split_whitespace().next()?;
+    Some(tok.trim_matches(&['{', '}'][..]).to_string())
+}
+
+fn extract_bracket_arg(line: &str, cmd: &str) -> Option<String> {
+    let pos = line.find(cmd)?;
+    let rest = line[pos + cmd.len()..].trim_start();
+    let end = rest.find(']').unwrap_or(rest.len());
+    Some(rest[..end].trim().trim_matches(&['{', '}'][..]).to_string())
+}
+
+fn extract_flag_clock(line: &str, flag: &str) -> Option<String> {
+    let pos = line.find(flag)?;
+    let rest = line[pos + flag.len()..].trim_start();
+    if let Some(after) = rest.strip_prefix('[') {
+        let end = after.find(']')?;
+        let inner = &after[..end];
+        let tok = inner.split_whitespace().last()?;
+        Some(tok.trim_matches(&['{', '}'][..]).to_string())
+    } else {
+        let tok = rest.split_whitespace().next()?;
+        Some(tok.trim_matches(&['{', '}'][..]).to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CdcConfig {
     /// Signals that should be formally verified to be Gray-coded (`popcount(s ^ $past(s)) <= 1`).
     pub gray_signals: Vec<String>,
+    /// Optional SDC timing/clock-group/false-path constraints.
+    pub sdc: Option<SdcConstraints>,
     pub depth: usize,
     pub solver: String,
     pub use_pdr: bool,
@@ -21,6 +134,7 @@ impl Default for CdcConfig {
     fn default() -> Self {
         Self {
             gray_signals: Vec::new(),
+            sdc: None,
             depth: 15,
             solver: "z3".to_string(),
             use_pdr: true,
@@ -188,6 +302,13 @@ pub fn run_cdc_analysis(raw: &Module, cfg: &CdcConfig) -> Result<CdcReport> {
 
             // CDC check: different clocks.
             if src_ff.clock.is_some() && dst_ff.clock.is_some() && src_ff.clock != dst_ff.clock {
+                let src_clk_name = &raw.signal(src_ff.clock.unwrap().signal).name;
+                let dst_clk_name = &raw.signal(dst_ff.clock.unwrap().signal).name;
+                let sdc_waived = cfg
+                    .sdc
+                    .as_ref()
+                    .map(|s| s.is_false_path(src_clk_name, dst_clk_name))
+                    .unwrap_or(false);
                 let w = raw.signal(src_sig).width;
                 if is_sync_stage1.contains(&dst_ff.signal) {
                     findings.push(CdcFinding {
@@ -209,6 +330,18 @@ pub fn run_cdc_analysis(raw: &Module, cfg: &CdcConfig) -> Result<CdcReport> {
                         dst_domain: dst_dom.clone(),
                         detail: format!(
                             "{w}-bit crossing flagged as Gray-coded (checked formally below)"
+                        ),
+                    });
+                } else if sdc_waived {
+                    findings.push(CdcFinding {
+                        severity: CdcSeverity::Safe,
+                        kind: "sdc_waived_cdc".into(),
+                        src_signal: src_name.clone(),
+                        src_domain: src_dom.clone(),
+                        dst_signal: dst_name.clone(),
+                        dst_domain: dst_dom.clone(),
+                        detail: format!(
+                            "waived by SDC set_false_path ({src_clk_name} -> {dst_clk_name})"
                         ),
                     });
                 } else if w > 1 {

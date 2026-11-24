@@ -6,6 +6,7 @@ members = [
     "crates/vf-smt",
     "crates/vf-engine",
     "crates/vf-apps",
+    "crates/vf-dsl",
     "crates/vf-cli",
 ]
 

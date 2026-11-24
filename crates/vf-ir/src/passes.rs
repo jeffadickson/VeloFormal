@@ -194,15 +194,33 @@ pub fn clk2fflogic(m: &mut Module) {
 }
 
 /// Returns true if the module uses more than one distinct clock signal/edge across its FFs.
+/// Resolve simple combinational alias chains (`wire a = b;`) to their root signal.
+pub fn resolve_signal_alias(m: &Module, mut sig: SignalId) -> SignalId {
+    for _ in 0..32 {
+        if let Some(ca) = m.comb.iter().find(|c| c.signal == sig) {
+            if let ExprKind::Signal(next) = m.expr(ca.value).kind {
+                if next != sig {
+                    sig = next;
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    sig
+}
+
 pub fn has_multiple_clocks(m: &Module) -> bool {
     let mut clocks: HashSet<ClockSpec> = HashSet::new();
     for ff in &m.ffs {
-        if let Some(c) = ff.clock {
+        if let Some(mut c) = ff.clock {
+            c.signal = resolve_signal_alias(m, c.signal);
             clocks.insert(c);
         }
     }
     for mw in &m.mem_writes {
-        if let Some(c) = mw.clock {
+        if let Some(mut c) = mw.clock {
+            c.signal = resolve_signal_alias(m, c.signal);
             clocks.insert(c);
         }
     }
