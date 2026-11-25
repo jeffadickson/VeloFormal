@@ -46,10 +46,20 @@ pub struct IsolationRule {
     pub iso_sense: IsoSense,
 }
 
+#[derive(Debug, Clone)]
+pub struct RetentionRule {
+    pub name: String,
+    pub domain: String,
+    pub elements: Vec<String>,
+    pub save_signal: Option<(String, IsoSense)>,
+    pub restore_signal: Option<(String, IsoSense)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct UpfSpec {
     pub domains: Vec<PowerDomain>,
     pub isolations: Vec<IsolationRule>,
+    pub retentions: Vec<RetentionRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,16 +241,112 @@ pub fn parse_upf_str(text: &str) -> Result<UpfSpec> {
                     rule.iso_sense = sense;
                 }
             }
+            "set_retention" => {
+                if tokens.len() < 2 {
+                    bail!("UPF `set_retention` missing strategy name");
+                }
+                let name = tokens[1].clone();
+                let mut domain = String::new();
+                let mut elements = Vec::new();
+                let mut save_signal = None;
+                let mut restore_signal = None;
+                let mut i = 2;
+                while i < tokens.len() {
+                    match tokens[i].as_str() {
+                        "-domain" if i + 1 < tokens.len() => {
+                            domain = tokens[i + 1].clone();
+                            i += 2;
+                        }
+                        "-elements" if i + 1 < tokens.len() => {
+                            elements.extend(split_list_tokens(&tokens[i + 1]));
+                            i += 2;
+                        }
+                        "-save_signal" if i + 1 < tokens.len() => {
+                            save_signal = parse_sense_pair(&tokens[i + 1]);
+                            i += 2;
+                        }
+                        "-restore_signal" if i + 1 < tokens.len() => {
+                            restore_signal = parse_sense_pair(&tokens[i + 1]);
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                if domain.is_empty() {
+                    bail!("UPF `set_retention {name}` missing `-domain`");
+                }
+                spec.retentions.push(RetentionRule {
+                    name,
+                    domain,
+                    elements,
+                    save_signal,
+                    restore_signal,
+                });
+            }
+            "set_retention_control" => {
+                if tokens.len() < 2 {
+                    bail!("UPF `set_retention_control` missing strategy name");
+                }
+                let name = &tokens[1];
+                let mut domain = None;
+                let mut save_signal = None;
+                let mut restore_signal = None;
+                let mut i = 2;
+                while i < tokens.len() {
+                    match tokens[i].as_str() {
+                        "-domain" if i + 1 < tokens.len() => {
+                            domain = Some(tokens[i + 1].clone());
+                            i += 2;
+                        }
+                        "-save_signal" if i + 1 < tokens.len() => {
+                            save_signal = parse_sense_pair(&tokens[i + 1]);
+                            i += 2;
+                        }
+                        "-restore_signal" if i + 1 < tokens.len() => {
+                            restore_signal = parse_sense_pair(&tokens[i + 1]);
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                let rule = spec
+                    .retentions
+                    .iter_mut()
+                    .find(|r| &r.name == name && domain.as_ref().is_none_or(|d| d == &r.domain))
+                    .ok_or_else(|| {
+                        anyhow!("UPF `set_retention_control` references unknown strategy '{name}'")
+                    })?;
+                if save_signal.is_some() {
+                    rule.save_signal = save_signal;
+                }
+                if restore_signal.is_some() {
+                    rule.restore_signal = restore_signal;
+                }
+            }
             _ => {
-                // Ignore informational UPF supply/retention/PST statements cleanly.
+                // Ignore informational UPF supply/PST statements cleanly.
             }
         }
     }
 
-    if spec.isolations.is_empty() && spec.domains.is_empty() {
-        bail!("UPF specification contained no power domains or isolation strategies");
+    if spec.isolations.is_empty() && spec.domains.is_empty() && spec.retentions.is_empty() {
+        bail!("UPF specification contained no power domains, isolation, or retention strategies");
     }
     Ok(spec)
+}
+
+fn parse_sense_pair(tok: &str) -> Option<(String, IsoSense)> {
+    let parts = split_list_tokens(tok);
+    let sig = parts.first()?.clone();
+    let sense = match parts
+        .get(1)
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("low" | "0" | "negedge") => IsoSense::Low,
+        _ => IsoSense::High,
+    };
+    Some((sig, sense))
 }
 
 /// Questa Low-Power / UPF Power-Domain Crossing Verifier:
@@ -363,7 +469,194 @@ pub fn run_powercheck(
         }
     }
 
+    // 4. Formal retention save/restore verification for IEEE 1801 `set_retention` strategies.
+    for ret in &upf.retentions {
+        let (Some((save_name, save_sense)), Some((rest_name, rest_sense))) =
+            (&ret.save_signal, &ret.restore_signal)
+        else {
+            findings.push(PowerFinding {
+                domain: ret.domain.clone(),
+                rule: ret.name.clone(),
+                signal: "*".into(),
+                check: "retention_control".into(),
+                status: PowerStatus::StructuralViolation(format!(
+                    "retention strategy '{}' missing `-save_signal` or `-restore_signal`",
+                    ret.name
+                )),
+            });
+            continue;
+        };
+        let save_sid = base.find_signal(save_name).ok_or_else(|| {
+            anyhow!(
+                "UPF retention save signal '{save_name}' not found in RTL module '{}'",
+                base.name
+            )
+        })?;
+        let rest_sid = base.find_signal(rest_name).ok_or_else(|| {
+            anyhow!(
+                "UPF retention restore signal '{rest_name}' not found in RTL module '{}'",
+                base.name
+            )
+        })?;
+
+        let targets: Vec<String> = if !ret.elements.is_empty() {
+            ret.elements.clone()
+        } else if let Some(dom) = domain_map.get(ret.domain.as_str()) {
+            dom.elements.clone()
+        } else {
+            Vec::new()
+        };
+
+        for tname in &targets {
+            let tsid = base.find_signal(tname).ok_or_else(|| {
+                anyhow!(
+                    "UPF retention element '{tname}' not found in RTL module '{}'",
+                    base.name
+                )
+            })?;
+            let status = verify_retention(
+                base,
+                save_sid,
+                *save_sense,
+                rest_sid,
+                *rest_sense,
+                tsid,
+                cfg,
+            )?;
+            findings.push(PowerFinding {
+                domain: ret.domain.clone(),
+                rule: ret.name.clone(),
+                signal: tname.clone(),
+                check: "retention_save_restore".into(),
+                status,
+            });
+        }
+    }
+
     Ok(findings)
+}
+
+fn verify_retention(
+    base: &Module,
+    save_sid: SignalId,
+    save_sense: IsoSense,
+    rest_sid: SignalId,
+    rest_sense: IsoSense,
+    target_sid: SignalId,
+    cfg: &PowerCheckConfig,
+) -> Result<PowerStatus> {
+    let mut m = base.clone();
+    m.properties.retain(|p| p.kind == PropertyKind::Assume);
+
+    let save_raw = m.sig_expr(save_sid);
+    let save_b = m.to_bool(save_raw);
+    let save_act = match save_sense {
+        IsoSense::High => save_b,
+        IsoSense::Low => m.logic_not(save_b),
+    };
+
+    let rest_raw = m.sig_expr(rest_sid);
+    let rest_b = m.to_bool(rest_raw);
+    let rest_act = match rest_sense {
+        IsoSense::High => rest_b,
+        IsoSense::Low => m.logic_not(rest_b),
+    };
+
+    // Detect optional hardware reset so reset cleanly invalidates saved retention state.
+    let rst_act = ["rst", "rst_n", "reset", "reset_n", "presetn"]
+        .iter()
+        .find_map(|cand| {
+            m.find_signal(cand).and_then(|sid| {
+                if m.signal(sid).kind == SignalKind::Input && m.signal(sid).width == 1 {
+                    let low = cand.ends_with("_n") || cand.ends_with("resetn");
+                    let e = m.sig_expr(sid);
+                    Some(if low { m.logic_not(e) } else { e })
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| m.c_bool(false));
+    let not_rst = m.logic_not(rst_act);
+
+    // Legal retention protocol: save and restore are not asserted simultaneously.
+    let both = m.logic_and(save_act, rest_act);
+    let not_both = m.logic_not(both);
+    let one = m.c_bool(true);
+    m.properties.push(Property {
+        name: "$upf_ret_mutex".into(),
+        kind: PropertyKind::Assume,
+        cond: not_both,
+        en: one,
+        source: None,
+    });
+
+    let sig_e = m.sig_expr(target_sid);
+    let w = m.width(sig_e);
+
+    // Shadow retention register captures `target` when `save_act && !rst_act`.
+    let shadow_sid = m.add_signal("$upf_ret_shadow", w, false, SignalKind::Reg);
+    let shadow_e = m.sig_expr(shadow_sid);
+    let do_save = m.logic_and(save_act, not_rst);
+    let next_shadow = m.mux(do_save, sig_e, shadow_e);
+    m.ffs.push(Ff {
+        signal: shadow_sid,
+        next: next_shadow,
+        init: None,
+        clock: None,
+        async_reset: None,
+    });
+
+    // Valid flag: set on `do_save`, cleared on `rst_act`.
+    let valid_sid = m.add_signal("$upf_ret_valid", 1, false, SignalKind::Reg);
+    m.signal_mut(valid_sid).init = Some(ConstBits::zero(1));
+    let valid_e = m.sig_expr(valid_sid);
+    let zero_b = m.c_bool(false);
+    let next_v1 = m.logic_or(valid_e, do_save);
+    let next_valid = m.mux(rst_act, zero_b, next_v1);
+    m.ffs.push(Ff {
+        signal: valid_sid,
+        next: next_valid,
+        init: Some(ConstBits::zero(1)),
+        clock: None,
+        async_reset: None,
+    });
+
+    // Trigger check 1 cycle after `rest_act && valid_e && !rst_act`: assert `target == prev_shadow`!
+    let r1 = m.logic_and(rest_act, valid_e);
+    let do_rest = m.logic_and(r1, not_rst);
+    let prev_rest = m.add_signal("$upf_prev_rest", 1, false, SignalKind::Reg);
+    m.signal_mut(prev_rest).init = Some(ConstBits::zero(1));
+    m.ffs.push(Ff {
+        signal: prev_rest,
+        next: do_rest,
+        init: Some(ConstBits::zero(1)),
+        clock: None,
+        async_reset: None,
+    });
+    let prev_shadow = m.add_signal("$upf_prev_shadow", w, false, SignalKind::Reg);
+    m.ffs.push(Ff {
+        signal: prev_shadow,
+        next: shadow_e,
+        init: None,
+        clock: None,
+        async_reset: None,
+    });
+
+    let pr_e = m.sig_expr(prev_rest);
+    let ps_e = m.sig_expr(prev_shadow);
+    let en = m.logic_and(pr_e, not_rst);
+    let cond = m.eq(sig_e, ps_e, false);
+
+    m.properties.push(Property {
+        name: format!("upf_retention_{}", base.signal(target_sid).name),
+        kind: PropertyKind::Assert,
+        cond,
+        en,
+        source: None,
+    });
+    vf_ir::passes::coi_prune(&mut m);
+    prove_power_prop(&m, cfg)
 }
 
 fn verify_clamp(

@@ -4,6 +4,11 @@
 
 Native Verilog & SystemVerilog formal verification suite written in Rust — combining an embedded [Slang](https://github.com/MikePopoloski/slang) IEEE 1800 frontend, word-level RTL netlist IR, SMT-LIB2 / BTOR2 / AIGER backends, full SymbiYosys & Questa-class Formal Apps, the human-readable `.vfc` v1.0 Contract DSL, a VS Code Language Server (`vf-lsp`), and a native **Model Context Protocol server (`vf-mcp`)** with an **anti-cheating Trust Audit** (`veloformal audit`) so humans and AI coding agents collaborate on mathematically verified silicon.
 
+- **Read the Book**: [***VeloFormal: Formal Verification for the Human & Agentic Era***](book/src/SUMMARY.md) (10 chapters on the Why, the How, Formal Apps, SLEC, ISO 26262, UPF & the Agentic Era)
+- **Full Language Spec**: [`.vfc` v1.0 Contract Language Specification](docs/VFC_SPEC.md) (complete EBNF grammar, strict type system, formal semantics & SVA translation)
+- **DSL vs. SVA Showcase**: [3-Tier Side-by-Side Comparison (`handshake_pipe` → `packet_fifo` → `secure_crypto_engine`)](examples/22_dsl_vs_sva_showcase/README.md)
+- **Agentic Setup**: [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md) • [`AGENTS.md`](AGENTS.md) • [`skills/veloformal/SKILL.md`](skills/veloformal/SKILL.md)
+
 > The previous C#/Python prototype is preserved on the `archive/csharp-prototype` branch and `archive-csharp-prototype` tag.
 
 ## Architecture

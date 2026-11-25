@@ -1,0 +1,10 @@
+[book]
+title = "VeloFormal: Formal Verification for the Human & Agentic Era"
+authors = ["VeloFormal Contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/jeffadickson/VeloFormal"

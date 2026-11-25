@@ -1005,12 +1005,85 @@ impl Lowerer {
                 other => bail!("unsupported SVA binary operator '{other}' at {loc}"),
             },
             AssertionExpr::SeqConcat { elements } => {
-                // Lower sequence `##d0 e0 ##d1 e1 ...` (including leading `##2 ack` or `##[1:3] done`).
+                // Lower sequence `##d0 e0 ##d1 e1 ...` (including `##2 ack`, `##[1:3] done`, and unbounded `##[1:$] ack`).
                 let mut cur_trig = guard;
                 for (i, el) in elements.iter().enumerate() {
                     let d_min = el.delay_min as usize;
+                    let is_unbounded = el.delay_max.is_none();
                     let d_max = el.delay_max.unwrap_or(el.delay_min) as usize;
                     let is_last = i + 1 == elements.len();
+
+                    // Unbounded SVA range delay (`##[d_min:$] target`):
+                    if is_unbounded {
+                        for _ in 0..d_min {
+                            cur_trig = self.make_sva_delay_reg(cur_trig);
+                        }
+                        let target = self.lower_assertion_bool(&el.expr, env)?;
+                        if is_last && assert_kind == "cover" {
+                            // Sticky armed latch: cover hits if `target` holds at ANY cycle >= d_min after trigger.
+                            let arm_name = format!("$sva_unb_cov_{}", self.past_counter);
+                            self.past_counter += 1;
+                            let arm_sig = self.module.add_signal(arm_name, 1, false, SignalKind::Reg);
+                            self.module.signal_mut(arm_sig).init = Some(ConstBits::zero(1));
+                            let arm_e = self.module.sig_expr(arm_sig);
+                            let armed_now = self.module.logic_or(arm_e, cur_trig);
+                            let next_arm = self.apply_disable(armed_now);
+                            self.aux_ffs.push(Ff {
+                                signal: arm_sig,
+                                next: next_arm,
+                                init: Some(ConstBits::zero(1)),
+                                clock: None,
+                                async_reset: None,
+                            });
+                            let en = self.apply_disable(armed_now);
+                            self.add_property("cover", target, en, loc);
+                            return Ok(());
+                        } else if is_last {
+                            // Assert/Assume `a |-> ##[d_min:$] b`: strong eventual response (liveness/fairness)!
+                            let pend_name = format!("$sva_unb_pend_{}", self.past_counter);
+                            self.past_counter += 1;
+                            let pend_sig = self.module.add_signal(pend_name, 1, false, SignalKind::Reg);
+                            self.module.signal_mut(pend_sig).init = Some(ConstBits::zero(1));
+                            let pend_e = self.module.sig_expr(pend_sig);
+                            let active = self.module.logic_or(pend_e, cur_trig);
+                            let not_target = self.module.logic_not(target);
+                            let still_pend_raw = self.module.logic_and(active, not_target);
+                            let still_pend = self.apply_disable(still_pend_raw);
+                            self.aux_ffs.push(Ff {
+                                signal: pend_sig,
+                                next: still_pend,
+                                init: Some(ConstBits::zero(1)),
+                                clock: None,
+                                async_reset: None,
+                            });
+                            let done_or_idle = self.module.logic_not(still_pend);
+                            let one = self.module.c_bool(true);
+                            let mapped = match assert_kind {
+                                "assume" => "fair",
+                                _ => "live",
+                            };
+                            self.add_property(mapped, done_or_idle, one, loc);
+                            return Ok(());
+                        } else {
+                            // Intermediate `##[d_min:$] e_i` in a longer sequence: sticky arm until `e_i` fires.
+                            let arm_name = format!("$sva_unb_mid_{}", self.past_counter);
+                            self.past_counter += 1;
+                            let arm_sig = self.module.add_signal(arm_name, 1, false, SignalKind::Reg);
+                            self.module.signal_mut(arm_sig).init = Some(ConstBits::zero(1));
+                            let arm_e = self.module.sig_expr(arm_sig);
+                            let armed_now = self.module.logic_or(arm_e, cur_trig);
+                            let next_arm = self.apply_disable(armed_now);
+                            self.aux_ffs.push(Ff {
+                                signal: arm_sig,
+                                next: next_arm,
+                                init: Some(ConstBits::zero(1)),
+                                clock: None,
+                                async_reset: None,
+                            });
+                            cur_trig = self.module.logic_and(armed_now, target);
+                            continue;
+                        }
+                    }
 
                     // Consequent bounded range delay (`##[d_min:d_max] target`):
                     // In IEEE 1800 SVA, `assert (a |-> ##[M:N] b)` means `b` holds on AT LEAST ONE

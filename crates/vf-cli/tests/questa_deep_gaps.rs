@@ -446,3 +446,156 @@ fn questa_tcl_full_parity_script_passes_and_emits_html_dashboard() {
     assert!(html.contains("regcheck"), "expected regcheck result in Tcl HTML");
     assert!(html.contains("slec_equiv"), "expected slec_equiv result in Tcl HTML");
 }
+
+#[test]
+fn sva_unbounded_delay_dollar_live_and_cover() {
+    let ok_sv = std::env::temp_dir().join("vf_unbounded_ok.sv");
+    let starve_sv = std::env::temp_dir().join("vf_unbounded_starve.sv");
+
+    // 1. Responder that always answers `req` with `ack` within 2 cycles -> `##[1:$] ack` PASSES live + cover!
+    fs::write(
+        &ok_sv,
+        r#"
+module unb_ok (input logic clk, input logic rst, input logic req, output logic ack);
+    logic [1:0] cnt;
+    initial cnt = 2'd0;
+    assign ack = (cnt == 2'd1);
+    always_ff @(posedge clk) begin
+        if (rst) cnt <= 2'd0;
+        else if (cnt != 2'd0) cnt <= cnt - 2'd1;
+        else if (req) cnt <= 2'd2;
+    end
+    a_eventually_ack: assert property (@(posedge clk) disable iff (rst) (req && cnt == 2'd0) |-> ##[1:$] ack);
+    c_eventually_ack: cover property  (@(posedge clk) disable iff (rst) (req && cnt == 2'd0) |-> ##[1:$] ack);
+endmodule
+"#,
+    )
+    .unwrap();
+
+    let (ok_live, out_live, err_live) =
+        run_cli(&["live", ok_sv.to_str().unwrap(), "--depth", "8"]);
+    let (ok_cov, out_cov, err_cov) =
+        run_cli(&["cover", ok_sv.to_str().unwrap(), "--depth", "8"]);
+    let _ = fs::remove_file(&ok_sv);
+    assert!(ok_live, "unbounded ##[1:$] live should pass:\n{out_live}\n{err_live}");
+    assert!(ok_cov && out_cov.contains("REACHED"), "unbounded ##[1:$] cover should hit:\n{out_cov}\n{err_cov}");
+
+    // 2. Broken responder that never acks -> `##[1:$] ack` catches starving lasso!
+    fs::write(
+        &starve_sv,
+        r#"
+module unb_starve (input logic clk, input logic rst, input logic req, output logic ack);
+    assign ack = 1'b0;
+    assume property (@(posedge clk) !rst);
+    a_eventually_ack: assert property (@(posedge clk) disable iff (rst) req |-> ##[1:$] ack);
+endmodule
+"#,
+    )
+    .unwrap();
+    let (ok_st, out_st, _) = run_cli(&["live", starve_sv.to_str().unwrap(), "--depth", "6"]);
+    let _ = fs::remove_file(&starve_sv);
+    assert!(!ok_st, "starving ##[1:$] should fail liveness:\n{out_st}");
+    assert!(out_st.contains("FAIL"), "expected FAIL lasso:\n{out_st}");
+}
+
+#[test]
+fn upf_retention_save_restore_pass_and_bug() {
+    let ret_upf = std::env::temp_dir().join("vf_ret.upf");
+    let ret_ok_sv = std::env::temp_dir().join("vf_ret_ok.sv");
+    let ret_bug_sv = std::env::temp_dir().join("vf_ret_bug.sv");
+
+    fs::write(
+        &ret_upf,
+        r#"
+upf_version 2.1
+create_power_domain PD_CORE -elements {cfg_reg}
+set_retention ret_cfg -domain PD_CORE -elements {cfg_reg}
+set_retention_control ret_cfg -domain PD_CORE \
+    -save_signal {save_en high} \
+    -restore_signal {restore_en high}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        &ret_ok_sv,
+        r#"
+module ret_dut (
+    input  logic       clk,
+    input  logic       rst,
+    input  logic       save_en,
+    input  logic       restore_en,
+    input  logic       we,
+    input  logic [7:0] din,
+    output logic [7:0] cfg_reg
+);
+    logic [7:0] ret_shadow;
+    initial begin
+        cfg_reg    = 8'd0;
+        ret_shadow = 8'd0;
+    end
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            cfg_reg    <= 8'd0;
+            ret_shadow <= 8'd0;
+        end else begin
+            if (save_en)    ret_shadow <= cfg_reg;
+            if (restore_en) cfg_reg    <= ret_shadow;
+            else if (we)    cfg_reg    <= din;
+        end
+    end
+endmodule
+"#,
+    )
+    .unwrap();
+
+    let (ok, stdout, stderr) = run_cli(&[
+        "powercheck",
+        ret_ok_sv.to_str().unwrap(),
+        "--upf",
+        ret_upf.to_str().unwrap(),
+    ]);
+    let _ = fs::remove_file(&ret_ok_sv);
+    assert!(ok, "clean UPF retention should pass:\n{stdout}\n{stderr}");
+    assert!(stdout.contains("retention_save_restore") && stdout.contains("PASS"));
+
+    // Buggy retention flop that forgets to restore `ret_shadow`!
+    fs::write(
+        &ret_bug_sv,
+        r#"
+module ret_dut (
+    input  logic       clk,
+    input  logic       rst,
+    input  logic       save_en,
+    input  logic       restore_en,
+    input  logic       we,
+    input  logic [7:0] din,
+    output logic [7:0] cfg_reg
+);
+    logic [7:0] ret_shadow;
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            cfg_reg    <= 8'd0;
+            ret_shadow <= 8'd0;
+        end else begin
+            if (save_en)    ret_shadow <= cfg_reg;
+            if (restore_en) cfg_reg    <= 8'hFF; // BUG: corrupts restored state!
+            else if (we)    cfg_reg    <= din;
+        end
+    end
+endmodule
+"#,
+    )
+    .unwrap();
+
+    let (ok_bug, out_bug, _) = run_cli(&[
+        "powercheck",
+        ret_bug_sv.to_str().unwrap(),
+        "--upf",
+        ret_upf.to_str().unwrap(),
+    ]);
+    let _ = fs::remove_file(&ret_bug_sv);
+    let _ = fs::remove_file(&ret_upf);
+    assert!(!ok_bug, "buggy retention restore must fail:\n{out_bug}");
+    assert!(out_bug.contains("FAIL") && out_bug.contains("retention_save_restore"));
+}
