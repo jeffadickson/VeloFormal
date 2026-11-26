@@ -510,7 +510,8 @@ fn resolve_slec_atom(m: &mut Module, tok: &str, width_hint: Option<u32>) -> Resu
 }
 
 pub fn check_slec(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<(Module, ProveOutcome)> {
-    let miter = build_slec_miter(gold, gate, cfg)?;
+    let mut miter = build_slec_miter(gold, gate, cfg)?;
+    vf_ir::opt::sweep_sequential(&mut miter);
     let outcome = match cfg.engine.as_str() {
         "pdr" => crate::pdr::run_pdr(
             &miter,
@@ -551,7 +552,8 @@ pub fn check_slec(gold: &Module, gate: &Module, cfg: &SlecConfig) -> Result<(Mod
 }
 
 pub fn check_equiv(gold: &Module, gate: &Module, cfg: &ProveConfig) -> Result<(Module, ProveOutcome)> {
-    let miter = build_miter(gold, gate)?;
+    let mut miter = build_miter(gold, gate)?;
+    vf_ir::opt::sweep_sequential(&mut miter);
     let outcome = run_kinduction(&miter, cfg)?;
     Ok((miter, outcome))
 }

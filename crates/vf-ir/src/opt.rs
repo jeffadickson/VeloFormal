@@ -265,6 +265,9 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
         ExprKind::And(a, b) => {
             let a = remap[a.0];
             let b = remap[b.0];
+            if a == b {
+                return a;
+            }
             if let Some(c) = as_const(module, a) {
                 if c.is_zero() {
                     return module.c_bits(ConstBits::zero(width));
@@ -286,6 +289,9 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
         ExprKind::Or(a, b) => {
             let a = remap[a.0];
             let b = remap[b.0];
+            if a == b {
+                return a;
+            }
             if let Some(c) = as_const(module, a) {
                 if c.is_zero() {
                     return b;
@@ -307,6 +313,9 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
         ExprKind::Xor(a, b) => {
             let a = remap[a.0];
             let b = remap[b.0];
+            if a == b {
+                return module.c_bits(ConstBits::zero(width));
+            }
             if let Some(c) = as_const(module, a) {
                 if c.is_zero() {
                     return b;
@@ -322,6 +331,16 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
         ExprKind::Add(a, b) => {
             let a = remap[a.0];
             let b = remap[b.0];
+            if let Some(c) = as_const(module, a) {
+                if c.is_zero() {
+                    return b;
+                }
+            }
+            if let Some(c) = as_const(module, b) {
+                if c.is_zero() {
+                    return a;
+                }
+            }
             if let (Some(va), Some(vb)) = (
                 as_const(module, a).and_then(|c| c.to_u128()),
                 as_const(module, b).and_then(|c| c.to_u128()),
@@ -338,6 +357,14 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
         ExprKind::Sub(a, b) => {
             let a = remap[a.0];
             let b = remap[b.0];
+            if a == b {
+                return module.c_bits(ConstBits::zero(width));
+            }
+            if let Some(c) = as_const(module, b) {
+                if c.is_zero() {
+                    return a;
+                }
+            }
             if let (Some(va), Some(vb)) = (
                 as_const(module, a).and_then(|c| c.to_u128()),
                 as_const(module, b).and_then(|c| c.to_u128()),
@@ -351,7 +378,27 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
             }
             module.intern(width, ExprKind::Sub(a, b))
         }
-        ExprKind::Mul(a, b) => module.intern(width, ExprKind::Mul(remap[a.0], remap[b.0])),
+        ExprKind::Mul(a, b) => {
+            let a = remap[a.0];
+            let b = remap[b.0];
+            if let Some(c) = as_const(module, a) {
+                if c.is_zero() {
+                    return module.c_bits(ConstBits::zero(width));
+                }
+                if c.to_u128() == Some(1) {
+                    return b;
+                }
+            }
+            if let Some(c) = as_const(module, b) {
+                if c.is_zero() {
+                    return module.c_bits(ConstBits::zero(width));
+                }
+                if c.to_u128() == Some(1) {
+                    return a;
+                }
+            }
+            module.intern(width, ExprKind::Mul(a, b))
+        }
         ExprKind::UDiv(a, b) => module.intern(width, ExprKind::UDiv(remap[a.0], remap[b.0])),
         ExprKind::SDiv(a, b) => module.intern(width, ExprKind::SDiv(remap[a.0], remap[b.0])),
         ExprKind::UMod(a, b) => module.intern(width, ExprKind::UMod(remap[a.0], remap[b.0])),
@@ -423,5 +470,221 @@ fn fold_node(module: &mut Module, width: u32, kind: &ExprKind, remap: &[ExprId])
             let addr = remap[addr.0];
             module.intern(width, ExprKind::MemRead { mem: *mem, addr })
         }
+    }
+}
+
+/// Statistics returned by [`sweep_sequential`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepStats {
+    pub const_ffs_removed: usize,
+    pub dup_ffs_merged: usize,
+    pub iterations: usize,
+}
+
+/// Sound sequential constant propagation and duplicate flip-flop merging pass
+/// (analogous to Yosys `opt_dff` + `opt_merge` on initialized synchronous FFs).
+///
+/// - Any synchronous FF with deterministic `init == Some(C)` whose next-state
+///   function preserves `C` (e.g., `next == C`, `next == Q`, or a mux tree whose
+///   leaves are all `C` or `Q`) is replaced by a combinational constant `C`.
+/// - Any two synchronous FFs with identical `(width, signed, init: Some(C), next, clock)`
+///   are merged to a single canonical FF, with the duplicate kept as a combinational
+///   alias so output ports and counterexample traces preserve every signal name.
+///
+/// Uninitialized FFs (`init == None`) and asynchronous-reset FFs are left untouched
+/// so X-Check, fault injection, and uninitialized-state semantics remain exact.
+pub fn sweep_sequential(module: &mut Module) -> SweepStats {
+    let mut stats = SweepStats::default();
+
+    for _ in 0..8 {
+        stats.iterations += 1;
+        optimize(module);
+        propagate_comb_constants(module);
+        optimize(module);
+
+        let mut changed = false;
+        let comb_targets: std::collections::HashSet<SignalId> =
+            module.comb.iter().map(|c| c.signal).collect();
+
+        // 1. Fold constant-preserving synchronous FFs.
+        let mut kept_ffs = Vec::with_capacity(module.ffs.len());
+        let mut sig_subst: HashMap<SignalId, ExprId> = HashMap::new();
+        let old_ffs = std::mem::take(&mut module.ffs);
+
+        for ff in old_ffs {
+            let sig = module.signal(ff.signal);
+            let is_free = matches!(
+                sig.kind,
+                crate::SignalKind::Input | crate::SignalKind::AnySeq | crate::SignalKind::AnyConst
+            );
+            if !is_free
+                && ff.async_reset.is_none()
+                && !comb_targets.contains(&ff.signal)
+                && ff.init.is_some()
+            {
+                let init_c = ff.init.as_ref().unwrap().clone();
+                if is_const_preserving(module, ff.next, ff.signal, &init_c, 0) {
+                    let c_expr = module.c_bits(init_c);
+                    module.comb.push(crate::CombAssign {
+                        signal: ff.signal,
+                        value: c_expr,
+                    });
+                    sig_subst.insert(ff.signal, c_expr);
+                    stats.const_ffs_removed += 1;
+                    changed = true;
+                    continue;
+                }
+            }
+            kept_ffs.push(ff);
+        }
+        module.ffs = kept_ffs;
+
+        if !sig_subst.is_empty() {
+            apply_signal_subst(module, &sig_subst);
+            optimize(module);
+        }
+
+        // 2. Merge structurally identical synchronous FFs with deterministic initial state.
+        let comb_targets2: std::collections::HashSet<SignalId> =
+            module.comb.iter().map(|c| c.signal).collect();
+        let mut seen: HashMap<
+            (u32, bool, ConstBits, ExprId, Option<crate::ClockSpec>),
+            SignalId,
+        > = HashMap::new();
+        let mut merged_ffs = Vec::with_capacity(module.ffs.len());
+        let mut dup_subst: HashMap<SignalId, ExprId> = HashMap::new();
+        let cur_ffs = std::mem::take(&mut module.ffs);
+
+        for ff in cur_ffs {
+            let sig = module.signal(ff.signal);
+            let is_free = matches!(
+                sig.kind,
+                crate::SignalKind::Input | crate::SignalKind::AnySeq | crate::SignalKind::AnyConst
+            );
+            if !is_free
+                && ff.async_reset.is_none()
+                && !comb_targets2.contains(&ff.signal)
+                && ff.init.is_some()
+            {
+                let key = (
+                    sig.width,
+                    sig.signed,
+                    ff.init.as_ref().unwrap().clone(),
+                    ff.next,
+                    ff.clock,
+                );
+                if let Some(&canon) = seen.get(&key) {
+                    let canon_e = module.sig_expr(canon);
+                    module.comb.push(crate::CombAssign {
+                        signal: ff.signal,
+                        value: canon_e,
+                    });
+                    dup_subst.insert(ff.signal, canon_e);
+                    stats.dup_ffs_merged += 1;
+                    changed = true;
+                    continue;
+                }
+                seen.insert(key, ff.signal);
+            }
+            merged_ffs.push(ff);
+        }
+        module.ffs = merged_ffs;
+
+        if !dup_subst.is_empty() {
+            apply_signal_subst(module, &dup_subst);
+            optimize(module);
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    let _ = module.topo_sort_comb();
+    stats
+}
+
+fn is_const_preserving(
+    module: &Module,
+    expr: ExprId,
+    sig: SignalId,
+    init_c: &ConstBits,
+    depth: usize,
+) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    match &module.expr(expr).kind {
+        ExprKind::Const(c) => c == init_c,
+        ExprKind::Signal(s) => *s == sig,
+        ExprKind::Mux {
+            then_val, else_val, ..
+        } => {
+            is_const_preserving(module, *then_val, sig, init_c, depth + 1)
+                && is_const_preserving(module, *else_val, sig, init_c, depth + 1)
+        }
+        _ => false,
+    }
+}
+
+fn propagate_comb_constants(module: &mut Module) {
+    let ff_sigs: std::collections::HashSet<SignalId> =
+        module.ffs.iter().map(|f| f.signal).collect();
+    let mut comb_counts: HashMap<SignalId, usize> = HashMap::new();
+    for c in &module.comb {
+        *comb_counts.entry(c.signal).or_default() += 1;
+    }
+    let mut subst: HashMap<SignalId, ExprId> = HashMap::new();
+    for c in &module.comb {
+        if comb_counts.get(&c.signal).copied().unwrap_or(0) != 1 || ff_sigs.contains(&c.signal) {
+            continue;
+        }
+        let kind = module.signal(c.signal).kind;
+        if matches!(
+            kind,
+            crate::SignalKind::Input | crate::SignalKind::AnySeq | crate::SignalKind::AnyConst
+        ) {
+            continue;
+        }
+        if matches!(module.expr(c.value).kind, ExprKind::Const(_)) {
+            subst.insert(c.signal, c.value);
+        }
+    }
+    if !subst.is_empty() {
+        apply_signal_subst(module, &subst);
+    }
+}
+
+fn apply_signal_subst(module: &mut Module, subst: &HashMap<SignalId, ExprId>) {
+    let len = module.exprs.len();
+    let mut remap: Vec<ExprId> = (0..len).map(ExprId).collect();
+    for i in 0..len {
+        let node = module.exprs[i].clone();
+        remap[i] = match node.kind {
+            ExprKind::Signal(s) => subst.get(&s).copied().unwrap_or(ExprId(i)),
+            _ => fold_node(module, node.width, &node.kind, &remap),
+        };
+    }
+    for c in &mut module.comb {
+        // Keep the substituted signal's own CombAssign intact (e.g., `dup = canon` or `r = C`).
+        if !subst.contains_key(&c.signal) {
+            c.value = remap[c.value.0];
+        }
+    }
+    for ff in &mut module.ffs {
+        ff.next = remap[ff.next.0];
+        if let Some(ar) = &mut ff.async_reset {
+            ar.cond = remap[ar.cond.0];
+            ar.reset_val = remap[ar.reset_val.0];
+        }
+    }
+    for mw in &mut module.mem_writes {
+        mw.addr = remap[mw.addr.0];
+        mw.data = remap[mw.data.0];
+        mw.enable = remap[mw.enable.0];
+    }
+    for p in &mut module.properties {
+        p.cond = remap[p.cond.0];
+        p.en = remap[p.en.0];
     }
 }

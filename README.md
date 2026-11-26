@@ -17,9 +17,9 @@ Native Verilog & SystemVerilog formal verification suite written in Rust — com
 Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .do)
   │
   ▼  vf-slang   — Embedded Slang v9.1 C++20 frontend + IEEE 1800 SVA (`bind`, repetition, `until`) & RTL instrumentation
-  ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, coi_prune, chformal, async2sync, clk2fflogic)
-  ▼  vf-smt     — SMT-LIB2 (QF_BV/QF_ABV), BTOR2, binary AIGER 1.0 bit-blaster, solver pipe, VCD writer
-  ▼  vf-engine  — BMC, k-Induction, IC3/PDR (ABC), Portfolio, Liveness/Fairness, Cover, Vacuity, Dead-End, Backtrace, SLEC
+  ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, sweep_sequential, coi_prune, chformal, async2sync, clk2fflogic)
+  ▼  vf-smt     — O(N) DAG-shared SMT-LIB2 (QF_BV/QF_ABV), BTOR2, binary AIGER 1.0 bit-blaster, cancellable solver pipe, VCD writer
+  ▼  vf-engine  — BMC, k-Induction, ABC IC3/PDR (`dc2+scorr+pdr`) & Craig Interpolation (`dc2+int`), Per-Property Parallel COI Portfolio (+ Lemma Promotion), Liveness/Fairness, Cover, Vacuity, Dead-End, Backtrace, SLEC
   ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (UPF), Agent Introspection & Trust Audit
   ▼  vf-dsl     — `.vfc` v1.0 Contract DSL (brace syntax, strict typing, native IR lowering & IEEE 1800 SVA `bind` export)
   ▼  vf-lsp     — Native Rust Language Server + VS Code extension (`editors/vscode/`)

@@ -1,7 +1,8 @@
 use anyhow::Result;
+use std::sync::Arc;
 use vf_ir::{Module, PropertyKind};
 use vf_smt::smt2;
-use vf_smt::solver::{SatResult, SmtSolver, TraceFrame};
+use vf_smt::solver::{CancelToken, SatResult, SmtSolver, TraceFrame};
 
 #[derive(Debug, Clone)]
 pub struct ProveConfig {
@@ -41,6 +42,30 @@ pub enum ProveOutcome {
 
 /// k-Induction unbounded safety prover (base case + inductive step, analogous to `sby mode prove`).
 pub fn run_kinduction(m: &Module, cfg: &ProveConfig) -> Result<ProveOutcome> {
+    run_kinduction_cancellable(m, cfg, None)
+}
+
+/// Cancellable k-induction runner used by the parallel portfolio so losing solver subprocesses
+/// terminate immediately when another engine finishes first.
+pub fn run_kinduction_cancellable(
+    m: &Module,
+    cfg: &ProveConfig,
+    cancel: Option<Arc<CancelToken>>,
+) -> Result<ProveOutcome> {
+    match run_kinduction_inner(m, cfg, cancel.clone()) {
+        Ok(out) => Ok(out),
+        Err(_) if cancel.as_ref().is_some_and(|c| c.is_cancelled()) => {
+            Ok(ProveOutcome::Unknown { max_k: 0 })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn run_kinduction_inner(
+    m: &Module,
+    cfg: &ProveConfig,
+    cancel: Option<Arc<CancelToken>>,
+) -> Result<ProveOutcome> {
     let assert_indices: Vec<usize> = m
         .properties
         .iter()
@@ -52,16 +77,22 @@ pub fn run_kinduction(m: &Module, cfg: &ProveConfig) -> Result<ProveOutcome> {
     if assert_indices.is_empty() {
         return Ok(ProveOutcome::Proved { k: 0 });
     }
+    if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+        return Ok(ProveOutcome::Unknown { max_k: 0 });
+    }
 
-    let mut base = SmtSolver::spawn(&cfg.solver)?;
+    let mut base = SmtSolver::spawn_with_cancel(&cfg.solver, cancel.clone())?;
     base.send(&smt2::header(m))?;
 
-    let mut ind = SmtSolver::spawn(&cfg.solver)?;
+    let mut ind = SmtSolver::spawn_with_cancel(&cfg.solver, cancel.clone())?;
     ind.send(&smt2::header(m))?;
 
     let init_sig = m.find_signal("$initstate");
 
     for k in 0..cfg.max_k {
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Ok(ProveOutcome::Unknown { max_k: k });
+        }
         // --- 1. Base case at step k ---
         base.send(&smt2::encode_step(m, k, k == 0, k.checked_sub(1)))?;
         base.send(&smt2::encode_assumes(m, k))?;
@@ -99,6 +130,10 @@ pub fn run_kinduction(m: &Module, cfg: &ProveConfig) -> Result<ProveOutcome> {
                 // Assertions hold at step k in base case; we can assume them to speed up later steps.
                 base.send(&smt2::encode_asserts_hold(m, k))?;
             }
+        }
+
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Ok(ProveOutcome::Unknown { max_k: k });
         }
 
         // --- 2. Inductive step at step k ---
