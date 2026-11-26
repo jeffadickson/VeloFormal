@@ -43,7 +43,20 @@ pub fn lower_contract_to_ir(
     role: ContractRole,
     param_values: &HashMap<String, i64>,
 ) -> Result<LoweredContract> {
-    let mut ctx = LowerCtx::new(base.clone(), contract, role, param_values)?;
+    lower_contract_to_ir_for_instance(base, contract, role, param_values, None)
+}
+
+/// Strictly typecheck and lower a `.vfc` v1.0 `Contract` onto a specific hierarchical instance
+/// prefix (e.g., `Some("u_alu")` resolves `a` -> `u_alu.a` and namespaces ghost/property names).
+/// Used by automated assume-guarantee composition (`veloformal compose`).
+pub fn lower_contract_to_ir_for_instance(
+    base: &Module,
+    contract: &Contract,
+    role: ContractRole,
+    param_values: &HashMap<String, i64>,
+    instance_prefix: Option<&str>,
+) -> Result<LoweredContract> {
+    let mut ctx = LowerCtx::new(base.clone(), contract, role, param_values, instance_prefix)?;
     ctx.lower_all()?;
     let mut m = ctx.module;
     m.topo_sort_comb().map_err(|e| anyhow!(e))?;
@@ -58,8 +71,10 @@ struct LowerCtx<'a> {
     module: Module,
     contract: &'a Contract,
     role: ContractRole,
+    instance_prefix: Option<String>,
     params: HashMap<String, i64>,
     ghost_sigs: HashMap<String, SignalId>,
+    symbolic_sigs: HashMap<String, SignalId>,
     rst_expr: ExprId,
     active_expr: ExprId,
     /// Cached post-reset history valid flags: `hist_valid[k]` is true iff >= k active cycles elapsed before now.
@@ -76,16 +91,35 @@ struct LowerCtx<'a> {
     secure_checks: Vec<LoweredSecureCheck>,
 }
 
+fn resolve_module_signal(
+    module: &Module,
+    prefix: Option<&str>,
+    name: &str,
+) -> Option<SignalId> {
+    if let Some(p) = prefix {
+        let qualified = format!("{p}.{name}");
+        if let Some(sid) = module.find_signal(&qualified) {
+            return Some(sid);
+        }
+    }
+    module.find_signal(name)
+}
+
 impl<'a> LowerCtx<'a> {
     fn new(
         mut module: Module,
         contract: &'a Contract,
         role: ContractRole,
         param_values: &HashMap<String, i64>,
+        instance_prefix: Option<&str>,
     ) -> Result<Self> {
+        let prefix = instance_prefix
+            .map(|p| p.trim_end_matches('.').to_string())
+            .filter(|p| !p.is_empty());
+
         // Validate clock signal exists if specified.
         if let Some(clk) = &contract.clock {
-            if module.find_signal(&clk.signal).is_none() {
+            if resolve_module_signal(&module, prefix.as_deref(), &clk.signal).is_none() {
                 bail!(
                     "clock signal '{}' not found in module '{}' at {}",
                     clk.signal,
@@ -121,8 +155,13 @@ impl<'a> LowerCtx<'a> {
         }
 
         // Register symbolic declarations (`$anyconst` / `$anyseq`).
+        let mut symbolic_sigs = HashMap::new();
         for s in &contract.symbolics {
-            if module.find_signal(&s.name).is_some() {
+            let ir_name = match &prefix {
+                Some(p) => format!("${p}__{}", s.name),
+                None => s.name.clone(),
+            };
+            if module.find_signal(&ir_name).is_some() {
                 bail!(
                     "symbolic '{}' collides with existing signal at {}",
                     s.name,
@@ -133,20 +172,25 @@ impl<'a> LowerCtx<'a> {
                 SymbolicKind::AnyConst => SignalKind::AnyConst,
                 SymbolicKind::AnySeq => SignalKind::AnySeq,
             };
-            module.add_signal(&s.name, s.width, s.signed, kind);
+            let sid = module.add_signal(&ir_name, s.width, s.signed, kind);
+            symbolic_sigs.insert(s.name.clone(), sid);
         }
 
         // Register ghost state registers.
         let mut ghost_sigs = HashMap::new();
         for g in &contract.ghosts {
-            if module.find_signal(&g.name).is_some() {
+            let ir_name = match &prefix {
+                Some(p) => format!("${p}__{}", g.name),
+                None => g.name.clone(),
+            };
+            if module.find_signal(&ir_name).is_some() {
                 bail!(
                     "ghost '{}' collides with existing signal at {}",
                     g.name,
                     g.span
                 );
             }
-            let sid = module.add_signal(&g.name, g.width, g.signed, SignalKind::Reg);
+            let sid = module.add_signal(&ir_name, g.width, g.signed, SignalKind::Reg);
             if let Some(init_e) = &g.init {
                 let v = eval_const_i64(init_e, &params)?;
                 let c = if g.signed {
@@ -164,16 +208,19 @@ impl<'a> LowerCtx<'a> {
 
         let zero_b = module.c_bool(false);
         let one_b = module.c_bool(true);
+        let init_aux = module.signals.len();
         let mut ctx = Self {
             module,
             contract,
             role,
+            instance_prefix: prefix,
             params,
             ghost_sigs,
+            symbolic_sigs,
             rst_expr: zero_b,
             active_expr: one_b,
             hist_valid: Vec::new(),
-            aux_counter: 0,
+            aux_counter: init_aux,
             trigger_captures: None,
             trigger_idx: 0,
             cur_max_prev: 0,
@@ -288,27 +335,31 @@ impl<'a> LowerCtx<'a> {
         // 8. Collect `xfree` and `secure` clauses (validating signal existence!).
         for xf in &self.contract.xfrees {
             for t in &xf.targets {
-                if self.module.find_signal(t).is_none() {
+                let Some(sid) = resolve_module_signal(&self.module, self.instance_prefix.as_deref(), t) else {
                     bail!("xfree target signal '{t}' not found at {}", xf.span);
-                }
-                self.xfree_targets.push(t.clone());
+                };
+                self.xfree_targets.push(self.module.signal(sid).name.clone());
             }
         }
         for sec in &self.contract.secures {
+            let mut resolved_sources = Vec::with_capacity(sec.sources.len());
             for s in &sec.sources {
-                if self.module.find_signal(s).is_none() {
+                let Some(sid) = resolve_module_signal(&self.module, self.instance_prefix.as_deref(), s) else {
                     bail!("secure source signal '{s}' not found at {}", sec.span);
-                }
+                };
+                resolved_sources.push(self.module.signal(sid).name.clone());
             }
+            let mut resolved_targets = Vec::with_capacity(sec.targets.len());
             for t in &sec.targets {
-                if self.module.find_signal(t).is_none() {
+                let Some(sid) = resolve_module_signal(&self.module, self.instance_prefix.as_deref(), t) else {
                     bail!("secure target signal '{t}' not found at {}", sec.span);
-                }
+                };
+                resolved_targets.push(self.module.signal(sid).name.clone());
             }
             let declassify = sec.unless.as_ref().map(|e| crate::fmt::fmt_expr(e, 0));
             self.secure_checks.push(LoweredSecureCheck {
-                sources: sec.sources.clone(),
-                targets: sec.targets.clone(),
+                sources: resolved_sources,
+                targets: resolved_targets,
                 declassify,
             });
         }
@@ -983,7 +1034,13 @@ impl<'a> LowerCtx<'a> {
                         unsized_val: (pv >= 0).then_some(u),
                     });
                 }
-                let Some(sid) = self.module.find_signal(name) else {
+                let sid = self
+                    .ghost_sigs
+                    .get(name)
+                    .copied()
+                    .or_else(|| self.symbolic_sigs.get(name).copied())
+                    .or_else(|| resolve_module_signal(&self.module, self.instance_prefix.as_deref(), name));
+                let Some(sid) = sid else {
                     bail!(
                         "unknown signal or parameter '{name}' in module '{}' at {}",
                         self.module.name,

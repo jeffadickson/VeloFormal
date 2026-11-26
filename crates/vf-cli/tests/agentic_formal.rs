@@ -180,10 +180,10 @@ fn vf_mcp_stdio_jsonrpc_full_protocol_and_tools() {
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "veloformal-mcp");
 
-    // 2. tools/list: verify all 10 typed formal tools are registered.
+    // 2. tools/list: verify all 12 typed formal tools are registered.
     let tools = call(2, "tools/list", json!({}));
     let tool_arr = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tool_arr.len(), 10, "expected 10 MCP formal tools");
+    assert_eq!(tool_arr.len(), 12, "expected 12 MCP formal tools");
 
     // 3. resources/read: fetch `.vfc` v1.0 quick-reference spec.
     let spec_res = call(

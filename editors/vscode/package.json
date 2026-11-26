@@ -26,7 +26,9 @@
     ],
     "commands": [
       { "command": "veloformal.verifyContract", "title": "VeloFormal: Verify Contract" },
-      { "command": "veloformal.emitSva", "title": "VeloFormal: Export IEEE 1800 SVA bind" }
+      { "command": "veloformal.emitSva", "title": "VeloFormal: Export IEEE 1800 SVA bind" },
+      { "command": "veloformal.runAutocheck", "title": "VeloFormal: Run AutoCheck & Open Waveform Debugger" },
+      { "command": "veloformal.openWaveformDebugger", "title": "VeloFormal: Open Sign-Off / Waveform Debugger HTML" }
     ],
     "configuration": {
       "title": "VeloFormal",

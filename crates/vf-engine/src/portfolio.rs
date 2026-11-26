@@ -389,6 +389,30 @@ fn run_portfolio_monolithic_with_cancel(
         });
     }
 
+    // Worker 4 (optional): Word-level BTOR2 IC3/PDR (`pono` / `avr`) when installed on PATH
+    if let Some((btor_kind, btor_bin)) = crate::btor_engine::detect_btor_solver() {
+        if !matches!(btor_kind, crate::btor_engine::BtorSolver::Btormc) {
+            let m4 = pruned.clone();
+            let tx4 = tx.clone();
+            let depth4 = cfg.depth;
+            let solver4 = cfg.solver.clone();
+            let tok4 = Arc::clone(&cancel);
+            launched += 1;
+            thread::spawn(move || {
+                let res = crate::btor_engine::run_btor_cancellable(
+                    &m4,
+                    &crate::btor_engine::BtorConfig {
+                        solver: btor_kind,
+                        depth: depth4,
+                        smt_solver: solver4,
+                    },
+                    Some(tok4),
+                );
+                let _ = tx4.send((format!("btor({btor_bin})"), res));
+            });
+        }
+    }
+
     drop(tx);
 
     let mut fallback: Option<(String, ProveOutcome)> = None;

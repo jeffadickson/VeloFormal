@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "veloformal": {
+      "command": "vf-mcp",
+      "args": [],
+      "description": "VeloFormal hardware formal verification (inspect_rtl, run_autocheck, verify_contract, check_equiv, compose_verify, get_vip_template, audit_trust)"
+    }
+  }
+}

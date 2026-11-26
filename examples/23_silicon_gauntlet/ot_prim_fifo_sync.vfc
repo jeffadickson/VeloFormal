@@ -1,0 +1,13 @@
+contract OtPrimFifoSpec for ot_prim_fifo_sync {
+    clock posedge clk;
+    reset when rst;
+
+    invariant depth_bounded: depth_o <= 4;
+    invariant full_blocks_write: (depth_o == 4) => !wready_o;
+    invariant empty_blocks_read: (depth_o == 0) => !rvalid_o;
+    invariant level_encoding_valid: (level_o == 0) || (level_o == 1) || (level_o == 2);
+    invariant empty_level_matches: (depth_o == 0) == (level_o == 0);
+    invariant full_level_matches: (depth_o == 4) == (level_o == 2);
+
+    cover reached_full: depth_o == 4;
+}

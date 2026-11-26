@@ -1,0 +1,7 @@
+// Top-level SoC contract proved compositionally by blackboxing u_alu.
+contract SocTopContract for soc_top {
+    clock posedge clk;
+    reset when rst;
+
+    invariant soc_output_bounded: !soc_valid || unsigned(soc_data) <= 254;
+}

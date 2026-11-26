@@ -109,6 +109,7 @@ public:
     JsonWriter& jw;
     std::unordered_map<const Symbol*, std::string> symNames;
     std::vector<std::string> errors;
+    const Expression* curAssignLhs = nullptr;
 
     ElaboratedEmitter(Compilation& comp, const SourceManager& sm, JsonWriter& jw) :
         comp(comp), sm(sm), jw(jw) {}
@@ -225,9 +226,27 @@ public:
                     collectSymbols(sub, subPrefix, false);
                     break;
                 }
+                case SymbolKind::InstanceArray: {
+                    auto& arr = member.as<InstanceArraySymbol>();
+                    collectInstanceArraySymbols(arr, prefix);
+                    break;
+                }
                 default:
                     break;
             }
+        }
+    }
+
+    void collectInstanceArraySymbols(const InstanceArraySymbol& arr, const std::string& prefix) {
+        size_t idx = 0;
+        for (auto* elem : arr.elements) {
+            std::string subPrefix = qualify(prefix, std::string(arr.name) + "[" + std::to_string(idx) + "]");
+            if (auto* sub = elem->as_if<InstanceSymbol>()) {
+                collectSymbols(*sub, subPrefix, false);
+            } else if (auto* nested = elem->as_if<InstanceArraySymbol>()) {
+                collectInstanceArraySymbols(*nested, subPrefix);
+            }
+            ++idx;
         }
     }
 
@@ -270,6 +289,43 @@ public:
         collectScopeBehavior(inst.body);
     }
 
+    void collectSubInstanceBehavior(const InstanceSymbol& sub) {
+        // Connect sub-instance ports to parent signals via continuous assignments.
+        for (auto* conn : sub.getPortConnections()) {
+            auto* ps = conn->port.as_if<PortSymbol>();
+            if (!ps || !ps->internalSymbol)
+                continue;
+            auto it = symNames.find(ps->internalSymbol);
+            if (it == symNames.end())
+                continue;
+            auto* extExpr = conn->getExpression();
+            if (!extExpr)
+                continue;
+            if (ps->direction == ArgumentDirection::In) {
+                portInputAssigns.emplace_back(it->second, extExpr);
+            }
+            else if (ps->direction == ArgumentDirection::Out) {
+                if (auto* ae = extExpr->as_if<AssignmentExpression>()) {
+                    portOutputAssigns.emplace_back(&ae->left(), it->second);
+                }
+                else {
+                    portOutputAssigns.emplace_back(extExpr, it->second);
+                }
+            }
+        }
+        collectBehavior(sub);
+    }
+
+    void collectInstanceArrayBehavior(const InstanceArraySymbol& arr) {
+        for (auto* elem : arr.elements) {
+            if (auto* sub = elem->as_if<InstanceSymbol>()) {
+                collectSubInstanceBehavior(*sub);
+            } else if (auto* nested = elem->as_if<InstanceArraySymbol>()) {
+                collectInstanceArrayBehavior(*nested);
+            }
+        }
+    }
+
     void collectScopeBehavior(const Scope& scope) {
         for (auto& member : scope.members()) {
             switch (member.kind) {
@@ -304,33 +360,11 @@ public:
                     break;
                 }
                 case SymbolKind::Instance: {
-                    auto& sub = member.as<InstanceSymbol>();
-                    // Connect sub-instance ports to parent signals via continuous assignments.
-                    for (auto* conn : sub.getPortConnections()) {
-                        auto* ps = conn->port.as_if<PortSymbol>();
-                        if (!ps || !ps->internalSymbol)
-                            continue;
-                        auto it = symNames.find(ps->internalSymbol);
-                        if (it == symNames.end())
-                            continue;
-                        auto* extExpr = conn->getExpression();
-                        if (!extExpr)
-                            continue;
-                        if (ps->direction == ArgumentDirection::In) {
-                            portInputAssigns.emplace_back(it->second, extExpr);
-                        }
-                        else if (ps->direction == ArgumentDirection::Out) {
-                            // For output ports, slang wraps the external target inside an
-                            // AssignmentExpression (left = external, right = EmptyArgument).
-                            if (auto* ae = extExpr->as_if<AssignmentExpression>()) {
-                                portOutputAssigns.emplace_back(&ae->left(), it->second);
-                            }
-                            else {
-                                portOutputAssigns.emplace_back(extExpr, it->second);
-                            }
-                        }
-                    }
-                    collectBehavior(sub);
+                    collectSubInstanceBehavior(member.as<InstanceSymbol>());
+                    break;
+                }
+                case SymbolKind::InstanceArray: {
+                    collectInstanceArrayBehavior(member.as<InstanceArraySymbol>());
                     break;
                 }
                 default:
@@ -643,7 +677,34 @@ public:
                 if (auto* ae = es.expr.as_if<AssignmentExpression>()) {
                     jw.writeProperty("kind"); jw.writeValue(std::string_view(ae->isNonBlocking() ? "nba" : "assign"));
                     jw.writeProperty("lhs"); emitExpr(ae->left());
+                    auto* prevLhs = curAssignLhs;
+                    curAssignLhs = &ae->left();
                     jw.writeProperty("rhs"); emitExpr(ae->right());
+                    curAssignLhs = prevLhs;
+                }
+                else if (auto* ue = es.expr.as_if<UnaryExpression>();
+                         ue && (ue->op == UnaryOperator::Postincrement ||
+                                ue->op == UnaryOperator::Preincrement ||
+                                ue->op == UnaryOperator::Postdecrement ||
+                                ue->op == UnaryOperator::Predecrement)) {
+                    bool isInc = (ue->op == UnaryOperator::Postincrement || ue->op == UnaryOperator::Preincrement);
+                    auto& ty = ue->operand().type->getCanonicalType();
+                    uint32_t w = ty.isIntegral() ? static_cast<uint32_t>(ty.getBitWidth()) : 32;
+                    bool isSigned = ty.isIntegral() && ty.isSigned();
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("assign"));
+                    jw.writeProperty("lhs"); emitExpr(ue->operand());
+                    jw.writeProperty("rhs");
+                    jw.startObject();
+                    jw.writeProperty("kind"); jw.writeValue(std::string_view("binary"));
+                    jw.writeProperty("op"); jw.writeValue(std::string_view(isInc ? "Add" : "Subtract"));
+                    jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(w));
+                    jw.writeProperty("signed"); jw.writeValue(isSigned);
+                    jw.writeProperty("left"); emitExpr(ue->operand());
+                    jw.writeProperty("right");
+                    std::string oneBits(w > 0 ? w - 1 : 0, '0');
+                    if (w > 0) oneBits.push_back('1');
+                    emitConst(w, oneBits, isSigned);
+                    jw.endObject();
                 }
                 else {
                     jw.writeProperty("kind"); jw.writeValue(std::string_view("expr_stmt"));
@@ -828,14 +889,28 @@ public:
                     return;
                 }
             }
-            auto it = symNames.find(&nv.symbol);
-            std::string name = (it != symNames.end()) ? it->second : std::string(nv.symbol.name);
+            const Symbol* targetSym = &nv.symbol;
+            if (auto* mp = targetSym->as_if<ModportPortSymbol>()) {
+                if (mp->internalSymbol) {
+                    targetSym = mp->internalSymbol;
+                } else if (auto* ce = mp->getConnectionExpr()) {
+                    emitExpr(*ce);
+                    return;
+                }
+            }
+            auto it = symNames.find(targetSym);
+            std::string name = (it != symNames.end()) ? it->second : std::string(targetSym->name);
             jw.startObject();
             jw.writeProperty("kind"); jw.writeValue(std::string_view("ref"));
             jw.writeProperty("name"); jw.writeValue(name);
             jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
             jw.writeProperty("signed"); jw.writeValue(isSigned);
             jw.endObject();
+            return;
+        }
+
+        if (expr.kind == ExpressionKind::LValueReference && curAssignLhs) {
+            emitExpr(*curAssignLhs);
             return;
         }
 
@@ -868,13 +943,66 @@ public:
                 jw.writeProperty("right"); emitExpr(b.right());
                 break;
             }
+            case ExpressionKind::Inside: {
+                auto& ins = expr.as<InsideExpression>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("inside"));
+                jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(1));
+                jw.writeProperty("signed"); jw.writeValue(false);
+                jw.writeProperty("left"); emitExpr(ins.left());
+                jw.writeProperty("ranges");
+                jw.startArray();
+                for (auto* r : ins.rangeList())
+                    emitExpr(*r);
+                jw.endArray();
+                break;
+            }
+            case ExpressionKind::ValueRange: {
+                auto& vr = expr.as<ValueRangeExpression>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("value_range"));
+                jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                jw.writeProperty("signed"); jw.writeValue(isSigned);
+                jw.writeProperty("left"); emitExpr(vr.left());
+                jw.writeProperty("right"); emitExpr(vr.right());
+                break;
+            }
+            case ExpressionKind::Streaming: {
+                auto& sc = expr.as<StreamingConcatenationExpression>();
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("streaming"));
+                uint64_t bw = sc.getBitstreamWidth();
+                jw.writeProperty("width"); jw.writeValue(bw > 0 ? bw : static_cast<uint64_t>(width));
+                jw.writeProperty("signed"); jw.writeValue(false);
+                jw.writeProperty("slice_size"); jw.writeValue(static_cast<uint64_t>(sc.getSliceSize()));
+                jw.writeProperty("operands");
+                jw.startArray();
+                for (auto& st : sc.streams())
+                    emitExpr(*st.operand);
+                jw.endArray();
+                break;
+            }
+            case ExpressionKind::SimpleAssignmentPattern:
+            case ExpressionKind::StructuredAssignmentPattern:
+            case ExpressionKind::ReplicatedAssignmentPattern: {
+                auto& pat = static_cast<const AssignmentPatternExpressionBase&>(expr);
+                jw.writeProperty("kind"); jw.writeValue(std::string_view("concat"));
+                jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
+                jw.writeProperty("signed"); jw.writeValue(isSigned);
+                jw.writeProperty("operands");
+                jw.startArray();
+                for (auto* el : pat.elements())
+                    emitExpr(*el);
+                jw.endArray();
+                break;
+            }
             case ExpressionKind::Assignment: {
                 auto& ae = expr.as<AssignmentExpression>();
                 jw.writeProperty("kind"); jw.writeValue(std::string_view("assign_expr"));
                 jw.writeProperty("width"); jw.writeValue(static_cast<uint64_t>(width));
                 jw.writeProperty("signed"); jw.writeValue(isSigned);
                 jw.writeProperty("lhs"); emitExpr(ae.left());
+                auto* prevLhs = curAssignLhs;
+                curAssignLhs = &ae.left();
                 jw.writeProperty("rhs"); emitExpr(ae.right());
+                curAssignLhs = prevLhs;
                 break;
             }
             case ExpressionKind::ConditionalOp: {

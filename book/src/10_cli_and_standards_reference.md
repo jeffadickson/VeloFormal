@@ -5,13 +5,16 @@
 | Command | Purpose | Key Flags |
 |---|---|---|
 | `bmc` | Bounded Model Checking | `--depth`, `--skip`, `--append`, `--solver`, `--vcd` |
-| `prove` | Unbounded safety proof | `--engine auto\|portfolio\|kind\|pdr`, `--coi`, `--case-split`, `--blackbox`, `--cutpoint`, `--cache-dir` |
+| `prove` | Unbounded safety proof | `--engine auto\|portfolio\|kind\|pdr\|btor\|pono\|avr\|btormc`, `--coi`, `--case-split`, `--blackbox`, `--cutpoint`, `--cache-dir` |
 | `live` | Liveness & fairness lasso detection | `--depth`, `--vcd` |
 | `cover` | Reachability witness generation | `--depth`, `--append`, `--vcd-dir` |
 | `vacuity` | Assertion antecedent reachability | `--depth` |
 | `deadend` | Over-constraint assumption dead-end detection | `--depth`, `--vcd` |
 | `equiv` | Questa-class SLEC equivalence | `--gold`, `--gate`, `--latency-gold`, `--latency-gate`, `--skip-cycles`, `--reset`, `--reset-cycles`, `--valid-cond`, `--output`, `--ignore-output` |
-| `contract` | Verify `.vfc` v1.0 contract | `--spec`, `--mode`, `--role provider\|caller`, `--vacuity`, `--report`, `--format`, `--emit-cert`, `--verify-cert` |
+| `contract` | Verify `.vfc` v1.0 contract | `--spec`, `--engine auto\|portfolio\|kind\|pdr\|btor\|pono\|avr\|btormc`, `--mode`, `--role provider\|caller`, `--vacuity`, `--report`, `--format`, `--emit-cert`, `--verify-cert` |
+| `compose` | Automated Hierarchical Assume-Guarantee Composition | `--spec`, `--sub inst=rtl.sv:spec.vfc`, `--manifest`, `--depth`, `--format text\|json`, `--report` |
+| `vip` | Turnkey Protocol VIP Library (8 protocols) | `list`, `init <proto> --module <mod> [--sva] [-o <file>]` |
+| `vplan` | Traceable Formal Verification Plan runner | `<vplan.json>`, `--format text\|markdown\|json`, `--report`, `--html`, `--md` |
 | `emit-sva` | Export `.vfc` to portable IEEE 1800 SVA `bind` | `--rtl`, `--top`, `-o` |
 | `fmt` | Canonical 4-space LF `.vfc` formatter | `--check`, `-i` |
 | `inspect` | Elaborated RTL introspection | `--format text\|json` |

@@ -18,5 +18,11 @@
 - [Chapter 9: Silicon Case Studies](./09_case_studies.md)
 - [Chapter 10: CLI, SymbiYosys, Questa Tcl & CI Reference](./10_cli_and_standards_reference.md)
 
+# Part IV: Chip-Scale Verification, Protocol VIPs & Production Ecosystem
+- [Chapter 11: Chip-Scale Formal — Word-Level BTOR2 & Assume-Guarantee Composition](./11_scaling_and_composition.md)
+- [Chapter 12: Turnkey Protocol VIP Library & Traceable Formal Verification Plans](./12_protocol_vip_and_vplan.md)
+- [Chapter 13: The Real-World Silicon Gauntlet (OpenTitan & TileLink-UL)](./13_silicon_gauntlet_case_studies.md)
+- [Chapter 14: CI/CD Pipelines, VS Code IDE Integration & Interactive Waveform Debugging](./14_ci_cd_ide_and_visual_debugging.md)
+
 ---
 - [Appendix A: `.vfc` v1.0 Full Language Specification](../../docs/VFC_SPEC.md)

@@ -1,0 +1,12 @@
+contract TlulIfCrossbarSpec for tlul_if_crossbar {
+    clock posedge clk;
+    reset when rst;
+
+    invariant always_ready: req_ready_o;
+
+    operation write_echo when req_valid_i && req_write_i {
+        ensure valid_next after 1 cycles: rsp_valid_o;
+    }
+
+    cover write_response: rsp_valid_o;
+}

@@ -1,10 +1,13 @@
 pub mod agent;
 pub mod autocheck;
 pub mod cdc;
+pub mod compose;
 pub mod connectivity;
 pub mod covercheck;
 pub mod fault;
 pub mod power;
 pub mod regcheck;
 pub mod secure;
+pub mod vip;
+pub mod vplan;
 pub mod xcheck;

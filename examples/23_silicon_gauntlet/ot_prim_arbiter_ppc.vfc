@@ -1,0 +1,12 @@
+contract OtPrimArbiterPpcSpec for ot_prim_arbiter_ppc {
+    clock posedge clk;
+    reset when rst;
+
+    invariant grant_subset_of_req: (gnt_o & ~req_i) == 0;
+    invariant grant_onehot0: (gnt_o & (gnt_o - 1)) == 0;
+    invariant work_conserving: (req_i != 0) == valid_o;
+    invariant filtered_clamped: data_o <= 127;
+    invariant streaming_swap_involution: roundtrip_word_o == be_word_i;
+
+    cover grant_lane3: gnt_o == 4'b1000;
+}

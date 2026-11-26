@@ -1,0 +1,43 @@
+{
+  "project": "VeloFormal Compositional SoC Sign-Off",
+  "version": "1.0",
+  "requirements": [
+    {
+      "id": "REQ-ALU-01",
+      "title": "Leaf ALU zero-SVA structural and formal AutoCheck clean",
+      "kind": "autocheck",
+      "owner": "rtl-team",
+      "rtl_files": ["heavy_alu_leaf.sv"],
+      "depth": 10
+    },
+    {
+      "id": "REQ-ALU-02",
+      "title": "Leaf ALU bounded output contract proved",
+      "kind": "contract",
+      "owner": "formal-team",
+      "rtl_files": ["heavy_alu_leaf.sv"],
+      "spec_file": "heavy_alu_leaf.vfc",
+      "depth": 12
+    },
+    {
+      "id": "REQ-SOC-01",
+      "title": "Top-level SoC bounded output proved via hierarchical assume-guarantee composition",
+      "kind": "compose",
+      "owner": "soc-lead",
+      "compose_config": {
+        "top_rtl_files": ["heavy_alu_leaf.sv", "soc_top.sv"],
+        "top_module": "soc_top",
+        "top_spec_file": "soc_top.vfc",
+        "submodules": [
+          {
+            "instance": "u_alu",
+            "module_name": "heavy_alu_leaf",
+            "rtl_files": ["heavy_alu_leaf.sv"],
+            "spec_file": "heavy_alu_leaf.vfc"
+          }
+        ],
+        "depth": 12
+      }
+    }
+  ]
+}

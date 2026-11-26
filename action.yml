@@ -1,0 +1,160 @@
+name: 'VeloFormal Formal Verification'
+description: 'Zero-SVA AutoCheck (18 formal checks), .vfc Contract Proof, 4-Gate Anti-Cheating Trust Audit, and Formal Verification Plans in CI.'
+author: 'VeloFormal Contributors'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  rtl_files:
+    description: 'Space-separated list of SystemVerilog / Verilog RTL files'
+    required: false
+    default: ''
+  top:
+    description: 'Optional top-level SystemVerilog module name'
+    required: false
+    default: ''
+  spec_file:
+    description: 'Optional .vfc v1.0 formal contract file to verify'
+    required: false
+    default: ''
+  vplan_file:
+    description: 'Optional Formal Verification Plan (vplan.json) to execute'
+    required: false
+    default: ''
+  mode:
+    description: 'Verification mode: autocheck, contract, audit, or vplan'
+    required: false
+    default: 'autocheck'
+  strict:
+    description: 'Enable strict 18-check AutoCheck mode (true/false)'
+    required: false
+    default: 'true'
+  auto_fsm:
+    description: 'Auto-discover FSM state registers for deadlock/livelock checks (true/false)'
+    required: false
+    default: 'true'
+  depth:
+    description: 'Bounded / induction depth (k)'
+    required: false
+    default: '20'
+  min_mutation_score:
+    description: 'Minimum formal mutation kill score (%) required by audit mode'
+    required: false
+    default: '50'
+  sarif_file:
+    description: 'Optional output path for SARIF 2.1.0 diagnostics (autocheck mode)'
+    required: false
+    default: 'veloformal.sarif'
+  html_report:
+    description: 'Optional output path for interactive HTML waveform sign-off report'
+    required: false
+    default: 'veloformal-signoff.html'
+  veloformal_bin:
+    description: 'Path to pre-installed veloformal binary (defaults to building/finding on PATH)'
+    required: false
+    default: ''
+
+outputs:
+  status:
+    description: 'Overall formal verification status (PASS or FAIL)'
+    value: ${{ steps.run-vf.outputs.status }}
+  report_path:
+    description: 'Path to generated HTML sign-off report'
+    value: ${{ inputs.html_report }}
+  sarif_path:
+    description: 'Path to generated SARIF 2.1.0 file'
+    value: ${{ inputs.sarif_file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Ensure Z3 and ABC solvers are available
+      shell: bash
+      run: |
+        if ! command -v z3 >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq z3 yosys-abc
+        fi
+
+    - name: Locate or build VeloFormal CLI
+      id: locate-vf
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.veloformal_bin }}" ] && [ -x "${{ inputs.veloformal_bin }}" ]; then
+          echo "bin=${{ inputs.veloformal_bin }}" >> "$GITHUB_OUTPUT"
+        elif command -v veloformal >/dev/null 2>&1; then
+          echo "bin=$(command -v veloformal)" >> "$GITHUB_OUTPUT"
+        else
+          echo "::group::Building VeloFormal from source"
+          cargo build --release --manifest-path "${{ github.action_path }}/Cargo.toml" -p vf-cli
+          echo "::endgroup::"
+          echo "bin=${{ github.action_path }}/target/release/veloformal" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run VeloFormal Formal Verification
+      id: run-vf
+      shell: bash
+      run: |
+        set +e
+        VF="${{ steps.locate-vf.outputs.bin }}"
+        MODE="${{ inputs.mode }}"
+        TOP_ARGS=()
+        if [ -n "${{ inputs.top }}" ]; then
+          TOP_ARGS=(--top "${{ inputs.top }}")
+        fi
+
+        echo "## VeloFormal Formal Sign-Off Summary" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "- **Mode**: \`${MODE}\`" >> "$GITHUB_STEP_SUMMARY"
+
+        case "$MODE" in
+          vplan)
+            "$VF" vplan "${{ inputs.vplan_file }}" \
+              --html "${{ inputs.html_report }}" \
+              --md vplan-summary.md
+            RC=$?
+            if [ -f vplan-summary.md ]; then
+              cat vplan-summary.md >> "$GITHUB_STEP_SUMMARY"
+            fi
+            ;;
+          audit)
+            # shellcheck disable=SC2086
+            "$VF" audit ${{ inputs.rtl_files }} "${TOP_ARGS[@]}" \
+              --spec "${{ inputs.spec_file }}" \
+              --depth "${{ inputs.depth }}" \
+              --min-mutation "${{ inputs.min_mutation_score }}" \
+              --report "${{ inputs.html_report }}"
+            RC=$?
+            ;;
+          contract)
+            # shellcheck disable=SC2086
+            "$VF" contract ${{ inputs.rtl_files }} "${TOP_ARGS[@]}" \
+              --spec "${{ inputs.spec_file }}" \
+              --depth "${{ inputs.depth }}" \
+              --vacuity \
+              --report "${{ inputs.html_report }}"
+            RC=$?
+            ;;
+          *)
+            EXTRA=()
+            if [ "${{ inputs.strict }}" = "true" ]; then EXTRA+=(--strict); fi
+            if [ "${{ inputs.auto_fsm }}" = "true" ]; then EXTRA+=(--auto-fsm); fi
+            # shellcheck disable=SC2086
+            "$VF" autocheck ${{ inputs.rtl_files }} "${TOP_ARGS[@]}" \
+              "${EXTRA[@]}" \
+              --depth "${{ inputs.depth }}" \
+              --sarif "${{ inputs.sarif_file }}" \
+              --report "${{ inputs.html_report }}"
+            RC=$?
+            ;;
+        esac
+
+        if [ "$RC" -eq 0 ]; then
+          echo "status=PASS" >> "$GITHUB_OUTPUT"
+          echo "- **Result**: PASS" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "- **Result**: FAIL (exit code $RC)" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "$RC"

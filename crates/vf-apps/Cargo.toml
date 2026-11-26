@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+vf-dsl = { path = "../vf-dsl" }
 vf-engine = { path = "../vf-engine" }
 vf-ir = { path = "../vf-ir" }
 vf-slang = { path = "../vf-slang" }

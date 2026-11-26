@@ -1,0 +1,13 @@
+// Leaf Provider / Caller contract for heavy_alu_leaf.
+// - In Provider role (leaf proof): assumes `require`, proves `invariant`.
+// - In Caller role (top proof):    asserts `require`, assumes `invariant`.
+contract HeavyAluContract for heavy_alu_leaf {
+    clock posedge clk;
+    reset when rst;
+
+    // Precondition: caller must clamp operands to [0..127] when in_valid is asserted.
+    require bounded_inputs: !in_valid || (unsigned(in_a) <= 127 && unsigned(in_b) <= 127);
+
+    // Guarantee: whenever out_valid is asserted, out_val fits in [0..254].
+    invariant out_bounded: !out_valid || unsigned(out_val) <= 254;
+}

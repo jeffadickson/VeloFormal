@@ -299,6 +299,7 @@ impl Lowerer {
                 bail!("unsupported packed struct field LHS in continuous assignment")
             }
             Expr::BitSelect {
+                width,
                 value,
                 selector,
                 range_left,
@@ -310,9 +311,12 @@ impl Lowerer {
                         if let Some(idx) =
                             self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
                         {
-                            let bit =
+                            let elem_idx =
                                 self.normalize_bit_index(idx as i64, *range_left, *range_right);
-                            self.record_comb_driver_bits(sig, bit, bit, "overlapping bit assignments");
+                            let elem_w = (*width).max(1);
+                            let lo = elem_idx * elem_w;
+                            let hi = lo + elem_w - 1;
+                            self.record_comb_driver_bits(sig, hi, lo, "overlapping bit assignments");
                             let base = self
                                 .comb_drivers
                                 .get(&sig)
@@ -320,7 +324,7 @@ impl Lowerer {
                                 .unwrap_or_else(|| {
                                     self.module.c_u64(self.module.signal(sig).width, 0)
                                 });
-                            let updated = self.module.update_slice(base, bit, bit, rhs);
+                            let updated = self.module.update_slice(base, hi, lo, rhs);
                             self.comb_drivers.insert(sig, updated);
                             return Ok(());
                         }
@@ -655,11 +659,17 @@ impl Lowerer {
         let mut driven_in_this_block: HashSet<SignalId> = HashSet::new();
         for (sig, val) in nba_writes {
             let arst = arst_vals.remove(&sig);
+            let combined = if let Some(blk_val) = blocking_env.remove(&sig) {
+                let mut cache = HashMap::new();
+                replace_sig_in_expr(&mut self.module, val, sig, blk_val, &mut cache)
+            } else {
+                val
+            };
             if self.inst.multi_driver_checks && self.seq_drivers.contains_key(&sig) {
                 self.record_multi_driven(sig, "driven by multiple clocked always blocks");
             }
             driven_in_this_block.insert(sig);
-            self.seq_drivers.insert(sig, (val, clock, arst));
+            self.seq_drivers.insert(sig, (combined, clock, arst));
         }
         for (sig, val) in blocking_env {
             let arst = arst_vals.remove(&sig);
@@ -991,8 +1001,38 @@ impl Lowerer {
         pat: &Expr,
         env: &HashMap<SignalId, ExprId>,
     ) -> Result<ExprId> {
-        if case_kind == "casez" || case_kind == "casex" {
-            if let Some((bits, mask)) = extract_wildcard_const(pat, case_kind == "casex") {
+        if let Expr::ValueRange { left, right, .. } = pat {
+            let lo = self.lower_expr(left, env)?;
+            let hi = self.lower_expr(right, env)?;
+            let both_signed = sel_signed && left.is_signed() && right.is_signed();
+            let w = self
+                .module
+                .width(sel)
+                .max(self.module.width(lo))
+                .max(self.module.width(hi));
+            let s = self.module.resize(sel, w, both_signed);
+            let l = self.module.resize(lo, w, both_signed);
+            let h = self.module.resize(hi, w, both_signed);
+            let ge = self.module.intern(
+                1,
+                if both_signed {
+                    ExprKind::Sle(l, s)
+                } else {
+                    ExprKind::Ule(l, s)
+                },
+            );
+            let le = self.module.intern(
+                1,
+                if both_signed {
+                    ExprKind::Sle(s, h)
+                } else {
+                    ExprKind::Ule(s, h)
+                },
+            );
+            return Ok(self.module.logic_and(ge, le));
+        }
+        if case_kind == "casez" || case_kind == "casex" || case_kind == "inside" {
+            if let Some((bits, mask)) = extract_wildcard_const(pat, case_kind == "casex" || case_kind == "inside") {
                 let w = self.module.width(sel).max(bits.width);
                 let sel_w = self.module.resize(sel, w, sel_signed);
                 let val_c = self.module.c_bits(bits.resize_zext(w));
@@ -1697,6 +1737,7 @@ impl Lowerer {
                 bail!("unsupported packed struct field assignment LHS")
             }
             Expr::BitSelect {
+                width,
                 value,
                 selector,
                 range_left,
@@ -1709,36 +1750,48 @@ impl Lowerer {
                             .get(&sig)
                             .copied()
                             .unwrap_or_else(|| self.module.sig_expr(sig));
+                        let elem_w = (*width).max(1);
                         if let Some(idx) =
                             self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
                         {
-                            let bit =
+                            let elem_idx =
                                 self.normalize_bit_index(idx as i64, *range_left, *range_right);
-                            let updated = self.module.update_slice(base, bit, bit, rhs);
+                            let lo = elem_idx * elem_w;
+                            let hi = lo + elem_w - 1;
+                            let updated = self.module.update_slice(base, hi, lo, rhs);
                             target.insert(sig, updated);
                             return Ok(());
                         } else {
                             let w = self.module.signal(sig).width;
+                            let num_elems = (w / elem_w).max(1);
                             let sel_e = self.lower_expr(selector, target)?;
                             if self.inst.oob_bitselect_checks {
                                 self.emit_bitselect_oob_check(
                                     "write",
                                     sel_e,
                                     selector.is_signed(),
-                                    w,
+                                    num_elems,
                                     *range_left,
                                     *range_right,
                                     guard,
                                 );
                             }
                             let sel_w = self.module.resize(sel_e, w, false);
-                            let one = self.module.c_u64(w, 1);
-                            let mask = self.module.intern(w, ExprKind::Shl(one, sel_w));
+                            let bit_shift = if elem_w == 1 {
+                                sel_w
+                            } else {
+                                let ew_c = self.module.c_u64(w, elem_w as u64);
+                                self.module.intern(w, ExprKind::Mul(sel_w, ew_c))
+                            };
+                            let elem_mask = self.module.c_bits(
+                                ConstBits::new(elem_w, "1".repeat(elem_w as usize)).resize_zext(w),
+                            );
+                            let mask = self.module.intern(w, ExprKind::Shl(elem_mask, bit_shift));
                             let not_mask = self.module.not(mask);
                             let cleared = self.module.intern(w, ExprKind::And(base, not_mask));
-                            let rhs_b = self.module.to_bool(rhs);
-                            let bit_val = self.module.resize(rhs_b, w, false);
-                            let shifted = self.module.intern(w, ExprKind::Shl(bit_val, sel_w));
+                            let rhs_sized = self.module.resize(rhs, elem_w, false);
+                            let rhs_zext = self.module.resize(rhs_sized, w, false);
+                            let shifted = self.module.intern(w, ExprKind::Shl(rhs_zext, bit_shift));
                             let updated = self.module.intern(w, ExprKind::Or(cleared, shifted));
                             target.insert(sig, updated);
                             return Ok(());
@@ -2242,6 +2295,7 @@ impl Lowerer {
                 Ok(self.module.slice(base, hi, lo))
             }
             Expr::BitSelect {
+                width,
                 value,
                 selector,
                 range_left,
@@ -2249,13 +2303,18 @@ impl Lowerer {
                 ..
             } => {
                 let base = self.lower_expr(value, env)?;
+                let elem_w = (*width).max(1);
                 if let Some(idx) =
                     self.try_eval_const(selector, 32, true).and_then(|c| c.to_u64())
                 {
-                    let bit = self.normalize_bit_index(idx as i64, *range_left, *range_right);
-                    Ok(self.module.slice(base, bit, bit))
+                    let elem_idx =
+                        self.normalize_bit_index(idx as i64, *range_left, *range_right);
+                    let lo = elem_idx * elem_w;
+                    let hi = lo + elem_w - 1;
+                    Ok(self.module.slice(base, hi, lo))
                 } else {
                     let w = self.module.width(base);
+                    let num_elems = (w / elem_w).max(1);
                     let sel = self.lower_expr(selector, env)?;
                     if self.inst.oob_bitselect_checks {
                         let guard = self.cur_guard;
@@ -2263,16 +2322,68 @@ impl Lowerer {
                             "read",
                             sel,
                             selector.is_signed(),
-                            w,
+                            num_elems,
                             *range_left,
                             *range_right,
                             guard,
                         );
                     }
-                    let sel = self.module.resize(sel, w, false);
-                    let shifted = self.module.intern(w, ExprKind::Lshr(base, sel));
-                    Ok(self.module.slice(shifted, 0, 0))
+                    let sel_w = self.module.resize(sel, w, false);
+                    let bit_shift = if elem_w == 1 {
+                        sel_w
+                    } else {
+                        let ew_c = self.module.c_u64(w, elem_w as u64);
+                        self.module.intern(w, ExprKind::Mul(sel_w, ew_c))
+                    };
+                    let shifted = self.module.intern(w, ExprKind::Lshr(base, bit_shift));
+                    Ok(self.module.slice(shifted, elem_w - 1, 0))
                 }
+            }
+            Expr::Inside { left, ranges, .. } => {
+                let lv = self.lower_expr(left, env)?;
+                let l_signed = left.is_signed();
+                let mut acc = self.module.c_bool(false);
+                for item in ranges {
+                    let m = self.lower_case_match("inside", lv, l_signed, item, env)?;
+                    acc = self.module.logic_or(acc, m);
+                }
+                Ok(acc)
+            }
+            Expr::ValueRange { left, .. } => self.lower_expr(left, env),
+            Expr::Streaming {
+                width,
+                slice_size,
+                operands,
+                ..
+            } => {
+                let mut parts = Vec::with_capacity(operands.len());
+                for op in operands {
+                    parts.push(self.lower_expr(op, env)?);
+                }
+                let packed = if parts.is_empty() {
+                    self.module.c_u64((*width).max(1), 0)
+                } else {
+                    self.module.concat(parts)
+                };
+                let total_w = self.module.width(packed);
+                let res = if *slice_size == 0 {
+                    // `{>>{...}}`: left-to-right bitstream packing.
+                    packed
+                } else {
+                    // `{<<slice_size{...}}`: reverse chunks of `slice_size` bits.
+                    let chunk = (*slice_size as u32).max(1);
+                    let mut chunks = Vec::new();
+                    let mut hi = total_w;
+                    while hi > 0 {
+                        let take = chunk.min(hi);
+                        let lo = hi - take;
+                        chunks.push(self.module.slice(packed, hi - 1, lo));
+                        hi = lo;
+                    }
+                    chunks.reverse();
+                    self.module.concat(chunks)
+                };
+                Ok(self.module.resize(res, (*width).max(1), false))
             }
             Expr::MemSelect {
                 value, selector, ..

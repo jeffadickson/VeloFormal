@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use vf_apps::agent::{inspect_module, run_trust_audit, scaffold_vfc_contract, TrustAuditConfig};
 use vf_apps::autocheck::{run_autocheck, AutoCheckConfig, CheckStatus};
 use vf_apps::cdc::{parse_sdc_file, run_cdc_analysis, CdcConfig, CdcSeverity, GrayStatus};
+use vf_apps::compose::{parse_sub_arg, run_compose, ComposeConfig};
 use vf_apps::connectivity::{parse_connectivity_csv, run_connectivity, ConnStatus};
 use vf_apps::covercheck::{run_covercheck, CoverCheckConfig, CoverageStatus};
 use vf_apps::fault::{run_fault_analysis, FaultConfig, FaultModel, FaultStatus};
@@ -22,10 +23,13 @@ use vf_apps::regcheck::{
     parse_regmap_auto, run_regcheck, RegBusConfig, RegCheckStatus, RegProtocol,
 };
 use vf_apps::secure::{run_secure_check, SecureConfig, SecureOutcome};
+use vf_apps::vip::{render_vip_sva, render_vip_vfc, VIP_CATALOG};
+use vf_apps::vplan::run_vplan_file;
 use vf_apps::xcheck::{run_xcheck, XCheckConfig, XStatus};
 use vf_dsl::{emit_sva, format_contract, lower_contract_to_ir, parse_contract, ContractRole};
 use vf_engine::backtrace::{compute_cex_backtrace, format_agent_trace_table};
 use vf_engine::bmc::{run_bmc, BmcConfig, BmcOutcome};
+use vf_engine::btor_engine::{run_btor, BtorConfig, BtorSolver};
 use vf_engine::cert::ProofCertificate;
 use vf_engine::cover::{run_cover, CoverConfig};
 use vf_engine::coverage::{
@@ -710,6 +714,65 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Automated Hierarchical Assume-Guarantee Composition: prove submodule leaves (`Provider`), blackbox them in top, bind `Caller` contracts, and prove top-level SoC
+    Compose {
+        #[command(flatten)]
+        src: SourceArgs,
+        /// Top-level `.vfc` contract file
+        #[arg(long)]
+        spec: PathBuf,
+        /// Submodule leaf spec(s): `instance=rtl.sv:spec.vfc` or `instance=rtl.sv:mod_name:spec.vfc` (repeatable)
+        #[arg(long = "sub")]
+        submodules: Vec<String>,
+        /// Optional JSON compose manifest file (alternative to `--sub`)
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Maximum verification depth
+        #[arg(long, default_value_t = 20)]
+        depth: usize,
+        /// SMT solver executable
+        #[arg(long, default_value = "z3")]
+        solver: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Optional interactive HTML sign-off & waveform debugger output path
+        #[arg(long)]
+        report: Option<PathBuf>,
+    },
+    /// Turnkey Protocol VIP Library (AXI4-Lite, AXI4-Full, AXI4-Stream, APB, AHB-Lite, TileLink-UL, Wishbone B4, RVFI)
+    Vip {
+        /// Action: `list` or `init`
+        action: String,
+        /// Protocol id (when action is `init`, e.g. `axi4_lite`, `tilelink_ul`, `rvfi`)
+        protocol: Option<String>,
+        /// Target DUT module name
+        #[arg(long)]
+        module: Option<String>,
+        /// Emit portable IEEE 1800 SVA `bind` instead of `.vfc`
+        #[arg(long)]
+        sva: bool,
+        /// Output file path (prints to stdout if omitted)
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
+    /// Execute a traceable Formal Verification Plan (`vplan.json`) mapping RTL requirements to formal proofs & Trust Audits
+    Vplan {
+        /// Path to JSON verification plan file
+        plan: PathBuf,
+        /// Output format: text, markdown, or json
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Optional HTML/JSON/Markdown sign-off matrix output file (auto-detected by extension)
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Optional HTML sign-off dashboard output file
+        #[arg(long)]
+        html: Option<PathBuf>,
+        /// Optional Markdown sign-off table output file
+        #[arg(long)]
+        md: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -834,6 +897,22 @@ fn run() -> Result<ExitCode> {
                             ..Default::default()
                         },
                     )?,
+                    "btor" | "pono" | "avr" | "btormc" => {
+                        let bsolver = match engine.as_str() {
+                            "pono" => BtorSolver::PonoIc3ia,
+                            "avr" => BtorSolver::Avr,
+                            "btormc" => BtorSolver::Btormc,
+                            _ => BtorSolver::Auto,
+                        };
+                        run_btor(
+                            &module,
+                            &BtorConfig {
+                                solver: bsolver,
+                                depth,
+                                smt_solver: solver,
+                            },
+                        )?
+                    }
                     "kind" => run_kinduction(
                         &module,
                         &ProveConfig {
@@ -2604,6 +2683,231 @@ fn run() -> Result<ExitCode> {
                 }
             }
             Ok(if report.trustworthy {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        Commands::Compose {
+            src,
+            spec,
+            submodules,
+            manifest,
+            depth,
+            solver,
+            format,
+            report,
+        } => {
+            let cfg = if let Some(mpath) = manifest {
+                let txt = fs::read_to_string(&mpath)?;
+                serde_json::from_str::<ComposeConfig>(&txt)?
+            } else {
+                let mut subs = Vec::with_capacity(submodules.len());
+                for raw in &submodules {
+                    subs.push(parse_sub_arg(raw)?);
+                }
+                let mut top_params = HashMap::new();
+                for p in &src.params {
+                    if let Some((k, v)) = p.split_once('=') {
+                        if let Ok(n) = v.trim().parse::<i64>() {
+                            top_params.insert(k.trim().to_string(), n);
+                        }
+                    }
+                }
+                ComposeConfig {
+                    top_rtl_files: src.files,
+                    top_module: src.top,
+                    top_spec_file: spec,
+                    top_params,
+                    submodules: subs,
+                    depth,
+                    solver,
+                    enable_pdr: true,
+                }
+            };
+            let res = run_compose(&cfg)?;
+            if let Some(rep_path) = report {
+                let mut sr = SignOffReport::new(
+                    "Hierarchical Assume-Guarantee Composition",
+                    &res.top_module_name,
+                );
+                for l in &res.leaf_results {
+                    let st = if matches!(l.outcome, ProveOutcome::Proved { .. }) {
+                        "PROVED"
+                    } else {
+                        "FAIL"
+                    };
+                    sr.items.push(ReportItem {
+                        name: format!("leaf:{} ({})", l.instance, l.contract_name),
+                        category: "compose:leaf".into(),
+                        status: st.into(),
+                        engine: l.winner.clone(),
+                        detail: format!("{} FFs verified standalone", l.original_ffs),
+                        source: None,
+                        trace: None,
+                    });
+                }
+                let (top_st, top_detail) = match &res.top_outcome {
+                    ProveOutcome::Proved { k } => (
+                        "PROVED",
+                        format!(
+                            "Unbounded proof (k={k}); FFs {} -> {} ({} abstracted)",
+                            res.top_ffs_before_blackbox,
+                            res.top_ffs_after_blackbox,
+                            res.top_blackboxed_signals
+                        ),
+                    ),
+                    ProveOutcome::Fail { property, step, .. } => (
+                        "FAIL",
+                        format!("Property `{property}` violated at cycle {step}"),
+                    ),
+                    ProveOutcome::AssumptionsUnsat { step } => (
+                        "FAIL",
+                        format!("Assumptions contradictory at cycle {step}"),
+                    ),
+                    ProveOutcome::Unknown { max_k } => (
+                        "UNKNOWN",
+                        format!("Inconclusive up to k={max_k}"),
+                    ),
+                };
+                sr.items.push(ReportItem {
+                    name: format!("top:{} ({})", res.top_module_name, res.top_contract_name),
+                    category: "compose:top".into(),
+                    status: top_st.into(),
+                    engine: res.top_winner.clone(),
+                    detail: top_detail,
+                    source: None,
+                    trace: res.failure_trace.clone(),
+                });
+                fs::write(&rep_path, sr.to_html())?;
+            }
+            if format == "json" {
+                let leaves: Vec<serde_json::Value> = res
+                    .leaf_results
+                    .iter()
+                    .map(|l| {
+                        serde_json::json!({
+                            "instance": l.instance,
+                            "contract": l.contract_name,
+                            "original_ffs": l.original_ffs,
+                            "proved": matches!(l.outcome, ProveOutcome::Proved { .. }),
+                            "winner": l.winner,
+                        })
+                    })
+                    .collect();
+                let out = serde_json::json!({
+                    "composed_proved": res.composed_proved,
+                    "top_module": res.top_module_name,
+                    "top_contract": res.top_contract_name,
+                    "top_ffs_before_blackbox": res.top_ffs_before_blackbox,
+                    "top_ffs_after_blackbox": res.top_ffs_after_blackbox,
+                    "top_blackboxed_signals": res.top_blackboxed_signals,
+                    "top_winner": res.top_winner,
+                    "leaves": leaves,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                for l in &res.leaf_results {
+                    let st = if matches!(l.outcome, ProveOutcome::Proved { .. }) {
+                        "PROVED"
+                    } else {
+                        "FAILED"
+                    };
+                    println!(
+                        "{st:<8} [compose:leaf] `{}` ({}, {} FFs) — {}",
+                        l.instance, l.contract_name, l.original_ffs, l.winner
+                    );
+                }
+                let top_st = if res.composed_proved { "PROVED" } else { "FAILED" };
+                println!(
+                    "{top_st:<8} [compose:top]  `{}` ({}) — FFs {} -> {} ({} signals abstracted, winner: {})",
+                    res.top_module_name,
+                    res.top_contract_name,
+                    res.top_ffs_before_blackbox,
+                    res.top_ffs_after_blackbox,
+                    res.top_blackboxed_signals,
+                    res.top_winner
+                );
+            }
+            Ok(if res.composed_proved {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        Commands::Vip {
+            action,
+            protocol,
+            module,
+            sva,
+            output,
+        } => {
+            match action.as_str() {
+                "list" => {
+                    println!("VeloFormal Turnkey Protocol VIP Library ({} protocols):", VIP_CATALOG.len());
+                    for v in VIP_CATALOG {
+                        println!("  {:<14} {:<32} — {}", v.id, v.standard, v.summary);
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                "init" | "add" | "emit" => {
+                    let proto = protocol
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("missing protocol name (try `veloformal vip list`)"))?;
+                    let rendered = if sva {
+                        render_vip_sva(proto, module.as_deref())?
+                    } else {
+                        render_vip_vfc(proto, module.as_deref())?
+                    };
+                    if let Some(path) = output {
+                        fs::write(&path, &rendered)?;
+                        println!("Wrote {} VIP to {}", proto, path.display());
+                    } else {
+                        print!("{rendered}");
+                    }
+                    Ok(ExitCode::SUCCESS)
+                }
+                other => anyhow::bail!("unknown `vip` action '{other}' (expected `list` or `init`)"),
+            }
+        }
+        Commands::Vplan {
+            plan,
+            format,
+            report: report_path,
+            html: html_path,
+            md: md_path,
+        } => {
+            let rep = run_vplan_file(&plan)?;
+            if let Some(rp) = &report_path {
+                let ext = rp.extension().and_then(|e| e.to_str()).unwrap_or("html");
+                let content = match ext {
+                    "json" => rep.to_json(),
+                    "md" => rep.to_markdown(),
+                    _ => rep.to_html(),
+                };
+                fs::write(rp, content)?;
+            }
+            if let Some(hp) = &html_path {
+                fs::write(hp, rep.to_html())?;
+            }
+            if let Some(mp) = &md_path {
+                fs::write(mp, rep.to_markdown())?;
+            }
+            match format.as_str() {
+                "json" => println!("{}", rep.to_json()),
+                "markdown" | "md" => print!("{}", rep.to_markdown()),
+                _ => {
+                    println!(
+                        "VPLAN {} — {}/{} requirements verified ({:.1}%)",
+                        rep.project, rep.passed_requirements, rep.total_requirements, rep.coverage_pct
+                    );
+                    for it in &rep.items {
+                        let st = if it.passed { "PASS" } else { "FAIL" };
+                        println!("  {st:<5} [{}] `{}` — {} ({})", it.kind, it.id, it.title, it.detail);
+                    }
+                }
+            }
+            Ok(if rep.all_passed() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)

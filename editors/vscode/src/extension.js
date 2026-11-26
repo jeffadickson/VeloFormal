@@ -108,6 +108,50 @@ function activate(context) {
       const term = vscode.window.createTerminal("VeloFormal");
       term.show();
       term.sendText(`${cliPath} emit-sva "${file}"`);
+    }),
+    vscode.commands.registerCommand("veloformal.openWaveformDebugger", async (uriStr) => {
+      const fs = require("fs");
+      let htmlPath = uriStr ? vscode.Uri.parse(uriStr).fsPath : vscode.window.activeTextEditor?.document.fileName;
+      if (!htmlPath || !htmlPath.endsWith(".html")) {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          filters: { "VeloFormal HTML Report": ["html"] },
+          openLabel: "Open VeloFormal Waveform Debugger",
+        });
+        if (!picked || picked.length === 0) return;
+        htmlPath = picked[0].fsPath;
+      }
+      const panel = vscode.window.createWebviewPanel(
+        "veloformalDebugger",
+        `VeloFormal Debugger — ${path.basename(htmlPath)}`,
+        vscode.ViewColumn.Beside,
+        { enableScripts: true }
+      );
+      panel.webview.html = fs.readFileSync(htmlPath, "utf8");
+    }),
+    vscode.commands.registerCommand("veloformal.runAutocheck", async (uriStr) => {
+      const fs = require("fs");
+      const os = require("os");
+      const file = uriStr ? vscode.Uri.parse(uriStr).fsPath : vscode.window.activeTextEditor?.document.fileName;
+      if (!file) return;
+      const reportPath = path.join(os.tmpdir(), `veloformal_autocheck_${Date.now()}.html`);
+      cp.execFile(
+        cliPath,
+        ["autocheck", file, "--auto-fsm", "--report", reportPath],
+        (_err, _stdout, stderr) => {
+          if (fs.existsSync(reportPath)) {
+            const panel = vscode.window.createWebviewPanel(
+              "veloformalAutocheck",
+              `VeloFormal AutoCheck — ${path.basename(file)}`,
+              vscode.ViewColumn.Beside,
+              { enableScripts: true }
+            );
+            panel.webview.html = fs.readFileSync(reportPath, "utf8");
+          } else {
+            vscode.window.showErrorMessage(`VeloFormal AutoCheck failed: ${stderr}`);
+          }
+        }
+      );
     })
   );
 }

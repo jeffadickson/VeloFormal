@@ -178,7 +178,7 @@ impl SignOffReport {
             let wave_html = if let Some(trace) = &item.trace {
                 let mut panel = String::new();
                 if badge_cls == "fail" {
-                    panel.push_str(&render_backtrace_html(trace));
+                    panel.push_str(&render_backtrace_html(trace, idx));
                 }
                 panel.push_str(&render_waveform_svg(trace, idx));
                 panel
@@ -214,7 +214,7 @@ impl SignOffReport {
         }
 
         format!(
-            r#"<!doctype html>
+            r##"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -247,7 +247,13 @@ impl SignOffReport {
   .badge.warn {{ background:rgba(210,153,34,0.2); color:#e3b341; border:1px solid rgba(210,153,34,0.4); }}
   .wbtn {{ margin-left:8px; background:#21262d; color:var(--accent); border:1px solid var(--border); border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px; }}
   .wave-row td {{ background:#0a0e14; padding:14px; overflow-x:auto; }}
-  svg.wave {{ display:block; }}
+  .wtoolbar {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }}
+  .wtoolbar input {{ background:#161b22; color:var(--fg); border:1px solid var(--border); border-radius:4px; padding:4px 8px; font-size:12px; width:190px; }}
+  .wtoolbar select, .wtoolbar button {{ background:#161b22; color:var(--fg); border:1px solid var(--border); border-radius:4px; padding:4px 8px; font-size:12px; cursor:pointer; }}
+  .wtoolbar .cursor-info {{ color:var(--accent); font-size:12px; margin-left:auto; }}
+  .bt-line {{ cursor:pointer; padding:1px 4px; border-radius:3px; display:block; }}
+  .bt-line:hover, .bt-line.active {{ background:rgba(88,166,255,0.2); color:#fff; }}
+  svg.wave {{ display:block; cursor:crosshair; }}
 </style>
 </head>
 <body>
@@ -257,7 +263,7 @@ impl SignOffReport {
       <h1>VeloFormal Formal Sign-Off Report</h1>
       <div class="sub">{title} — Module: <span class="mono">{mod_name}</span></div>
     </div>
-    <div class="sub">Engine: VeloFormal v{ver} (Slang + SMT/PDR)</div>
+    <div class="sub">Engine: VeloFormal v{ver} (Slang + SMT/PDR/BTOR2)</div>
   </header>
   <div class="kpis">
     <div class="kpi"><div class="lbl">Total Checks</div><div class="val">{total}</div></div>
@@ -279,10 +285,95 @@ impl SignOffReport {
   </table>
 </div>
 <script>
+const VF_STATE = {{}};
+function fmtBits(bits, width, radix) {{
+  if (radix === 'bin') return width + "'b" + bits;
+  try {{
+    const u = BigInt('0b' + bits);
+    if (radix === 'dec') return u.toString(10);
+    if (radix === 'sdec') {{
+      const msb = bits[0] === '1';
+      const signed = msb ? (u - (1n << BigInt(width))) : u;
+      return signed.toString(10);
+    }}
+    return '0x' + u.toString(16).toUpperCase();
+  }} catch (_) {{ return bits; }}
+}}
+function renderInteractiveWave(id) {{
+  const st = VF_STATE[id];
+  if (!st) return;
+  const data = st.data;
+  const host = document.getElementById('wsvg-' + id);
+  if (!host) return;
+  const q = (st.filter || '').toLowerCase();
+  const sigs = data.signals.filter(s => !q || s.name.toLowerCase().includes(q));
+  const steps = data.steps;
+  const labelW = 180, cellW = st.cellW || 68, rowH = 28, topH = 26;
+  const width = labelW + steps * cellW + 16;
+  const height = topH + Math.max(sigs.length, 1) * rowH + 8;
+  let s = `<svg class="wave" width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}" xmlns="http://www.w3.org/2000/svg">`;
+  for (let t = 0; t < steps; t++) {{
+    const x = labelW + t * cellW;
+    const isCur = (t === st.cursor);
+    if (isCur) s += `<rect x="${{x}}" y="${{topH}}" width="${{cellW}}" height="${{height - topH}}" fill="rgba(210,153,34,0.14)"/>`;
+    s += `<line x1="${{x}}" y1="${{topH}}" x2="${{x}}" y2="${{height}}" stroke="${{isCur ? '#d29922' : '#21262d'}}" stroke-width="${{isCur ? 2 : 1}}"/>`;
+    s += `<text x="${{x + cellW/2}}" y="17" fill="${{isCur ? '#e3b341' : '#8b949e'}}" font-family="monospace" font-size="11" text-anchor="middle" style="cursor:pointer" onclick="jumpCycle(${{id}},${{t}})">t=${{t}}</text>`;
+  }}
+  sigs.forEach((sig, r) => {{
+    const y0 = topH + r * rowH, yHi = y0 + 5, yLo = y0 + rowH - 5, yMid = y0 + rowH / 2 + 4;
+    const curVal = sig.values[st.cursor] || sig.values[0];
+    const lbl = `${{sig.name}} [${{sig.width}}]`;
+    s += `<text x="6" y="${{yMid}}" fill="#c9d1d9" font-family="monospace" font-size="11">${{lbl.replace(/</g,'&lt;')}}</text>`;
+    if (sig.width === 1) {{
+      let d = '';
+      sig.values.forEach((b, t) => {{
+        const x0 = labelW + t * cellW, x1 = x0 + cellW, y = (b === '0') ? yLo : yHi;
+        d += (t === 0 ? `M ${{x0}} ${{y}} L ${{x1}} ${{y}}` : ` L ${{x0}} ${{y}} L ${{x1}} ${{y}}`);
+      }});
+      s += `<path d="${{d}}" fill="none" stroke="#3fb950" stroke-width="2"/>`;
+      sig.values.forEach((b, t) => {{
+        const x0 = labelW + t * cellW;
+        s += `<rect x="${{x0}}" y="${{y0}}" width="${{cellW}}" height="${{rowH}}" fill="transparent" onclick="jumpCycle(${{id}},${{t}})"/>`;
+      }});
+    }} else {{
+      sig.values.forEach((b, t) => {{
+        const x0 = labelW + t * cellW + 2, w = cellW - 4, h = rowH - 10;
+        const changed = t > 0 && sig.values[t - 1] !== b;
+        const txt = fmtBits(b, sig.width, st.radix);
+        s += `<rect x="${{x0}}" y="${{yHi}}" width="${{w}}" height="${{h}}" rx="3" fill="${{changed ? '#1f2d3d' : '#162232'}}" stroke="${{changed ? '#e3b341' : '#58a6ff'}}" stroke-width="1" onclick="jumpCycle(${{id}},${{t}})"/>`;
+        s += `<text x="${{x0 + w/2}}" y="${{yMid}}" fill="#e6edf3" font-family="monospace" font-size="10" text-anchor="middle" pointer-events="none">${{txt}}</text>`;
+      }});
+    }}
+  }});
+  s += '</svg>';
+  host.innerHTML = s;
+  const info = document.getElementById('wcursor-' + id);
+  if (info) {{
+    const snap = sigs.slice(0, 6).map(sig => `${{sig.name}}=${{fmtBits(sig.values[st.cursor] || '0', sig.width, st.radix)}}`).join(' | ');
+    info.textContent = `Cursor t=${{st.cursor}}: ${{snap}}`;
+  }}
+  document.querySelectorAll('#bt-' + id + ' .bt-line').forEach(el => {{
+    el.classList.toggle('active', Number(el.dataset.cycle) === st.cursor);
+  }});
+}}
+function ensureWaveInit(id) {{
+  if (VF_STATE[id]) return;
+  const el = document.getElementById('wdata-' + id);
+  if (!el) return;
+  const data = JSON.parse(el.textContent);
+  VF_STATE[id] = {{ data, radix: 'hex', filter: '', cellW: 68, cursor: Math.max(0, data.steps - 1) }};
+}}
 function toggleWave(id) {{
   var r = document.getElementById('wave-' + id);
-  if (r) r.style.display = (r.style.display === 'none') ? 'table-row' : 'none';
+  if (!r) return;
+  const show = (r.style.display === 'none');
+  r.style.display = show ? 'table-row' : 'none';
+  if (show) {{ ensureWaveInit(id); renderInteractiveWave(id); }}
 }}
+function setRadix(id, r) {{ ensureWaveInit(id); VF_STATE[id].radix = r; renderInteractiveWave(id); }}
+function setSigFilter(id, q) {{ ensureWaveInit(id); VF_STATE[id].filter = q; renderInteractiveWave(id); }}
+function zoomWave(id, delta) {{ ensureWaveInit(id); VF_STATE[id].cellW = Math.max(40, Math.min(140, VF_STATE[id].cellW + delta)); renderInteractiveWave(id); }}
+function jumpCycle(id, t) {{ ensureWaveInit(id); VF_STATE[id].cursor = Math.max(0, Math.min(VF_STATE[id].data.steps - 1, t)); renderInteractiveWave(id); }}
 function filterRows(kind, btn) {{
   document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
@@ -293,7 +384,7 @@ function filterRows(kind, btn) {{
 </script>
 </body>
 </html>
-"#,
+"##,
             title = html_escape(&self.title),
             mod_name = html_escape(&self.module_name),
             ver = env!("CARGO_PKG_VERSION"),
@@ -301,7 +392,7 @@ function filterRows(kind, btn) {{
     }
 }
 
-fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
+fn render_waveform_svg(trace: &[TraceFrame], id: usize) -> String {
     if trace.is_empty() {
         return String::new();
     }
@@ -310,12 +401,42 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
         .iter()
         .filter(|(n, _)| !n.starts_with('$'))
         .map(|(n, _)| n.as_str())
-        .take(24)
+        .take(32)
         .collect();
     if sigs.is_empty() {
         return String::new();
     }
     let steps = trace.len();
+
+    // Serialize trace JSON for live interactive radix / filter / zoom / cursor updates.
+    let sig_json: Vec<serde_json::Value> = sigs
+        .iter()
+        .filter_map(|&sig| {
+            let vals: Vec<&vf_ir::ConstBits> = trace
+                .iter()
+                .filter_map(|f| f.values.iter().find(|(n, _)| n == sig).map(|(_, v)| v))
+                .collect();
+            if vals.is_empty() {
+                return None;
+            }
+            let width = vals[0].width;
+            let bit_strs: Vec<&str> = vals.iter().map(|v| v.bits.as_str()).collect();
+            Some(serde_json::json!({
+                "name": sig,
+                "width": width,
+                "values": bit_strs,
+            }))
+        })
+        .collect();
+    let payload = serde_json::json!({
+        "steps": steps,
+        "signals": sig_json,
+    });
+    let payload_str = serde_json::to_string(&payload)
+        .unwrap_or_else(|_| "{}".into())
+        .replace("</", "<\\/");
+
+    // Also render initial static SVG fallback so non-JS viewers still see full waveforms.
     let label_w = 170usize;
     let cell_w = 64usize;
     let row_h = 28usize;
@@ -324,9 +445,8 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
     let height = top_h + sigs.len() * row_h + 8;
 
     let mut svg = format!(
-        r#"<svg class="wave" width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">"#
+        r#"<div class="wtoolbar"><input type="text" placeholder="Filter signals..." oninput="setSigFilter({id},this.value)"/><select onchange="setRadix({id},this.value)"><option value="hex">Hex</option><option value="dec">Unsigned Dec</option><option value="sdec">Signed Dec</option><option value="bin">Binary</option></select><button onclick="zoomWave({id},16)">Zoom +</button><button onclick="zoomWave({id},-16)">Zoom -</button><span id="wcursor-{id}" class="cursor-info mono">Click any cycle to inspect</span></div><script type="application/json" id="wdata-{id}">{payload_str}</script><div id="wsvg-{id}"><svg class="wave" width="{width}" height="{height}" viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">"#
     );
-    // Cycle header grid
     for t in 0..steps {
         let x = label_w + t * cell_w;
         let _ = write!(
@@ -359,7 +479,6 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
             continue;
         }
         if vals[0].width == 1 {
-            // 1-bit digital waveform line
             let mut d = String::new();
             for (t, v) in vals.iter().enumerate() {
                 let x0 = label_w + t * cell_w;
@@ -376,7 +495,6 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
                 r##"<path d="{d}" fill="none" stroke="#3fb950" stroke-width="2"/>"##
             );
         } else {
-            // Multi-bit bus boxes with hex values
             for (t, v) in vals.iter().enumerate() {
                 let x0 = label_w + t * cell_w + 2;
                 let w = cell_w - 4;
@@ -397,7 +515,7 @@ fn render_waveform_svg(trace: &[TraceFrame], _id: usize) -> String {
             }
         }
     }
-    svg.push_str("</svg>");
+    svg.push_str("</svg></div>");
     svg
 }
 
@@ -416,12 +534,12 @@ fn is_failure_status(s: &str) -> bool {
     )
 }
 
-fn render_backtrace_html(trace: &[TraceFrame]) -> String {
+fn render_backtrace_html(trace: &[TraceFrame], id: usize) -> String {
     if trace.is_empty() {
         return String::new();
     }
     let mut prev: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut lines: Vec<String> = Vec::new();
+    let mut entries: Vec<(usize, String)> = Vec::new();
     let last_t = trace.len() - 1;
     for (t, frame) in trace.iter().enumerate() {
         for (name, bits) in &frame.values {
@@ -438,26 +556,33 @@ fn render_backtrace_html(trace: &[TraceFrame]) -> String {
             match prev.get(name) {
                 None => {
                     if t == last_t || !bits.is_zero() {
-                        lines.push(format!("[t={t}] {name} = {val}"));
+                        entries.push((t, format!("[t={t}] {name} = {val}")));
                     }
                 }
                 Some(p) if p != &val => {
-                    lines.push(format!("[t={t}] {name}: {p} -> {val}"));
+                    entries.push((t, format!("[t={t}] {name}: {p} -> {val}")));
                 }
                 _ => {}
             }
             prev.insert(name.clone(), val);
         }
     }
-    if lines.is_empty() {
+    if entries.is_empty() {
         return String::new();
     }
-    if lines.len() > 20 {
-        lines = lines.split_off(lines.len() - 20);
+    if entries.len() > 24 {
+        entries = entries.split_off(entries.len() - 24);
     }
-    let body = html_escape(&lines.join("\n"));
+    let mut body = String::new();
+    for (cyc, line) in entries {
+        let _ = writeln!(
+            body,
+            r#"<span class="bt-line" data-cycle="{cyc}" onclick="jumpCycle({id},{cyc})">{}</span>"#,
+            html_escape(&line)
+        );
+    }
     format!(
-        r##"<div style="margin-bottom:10px;padding:10px 12px;background:#161b22;border:1px solid #30363d;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#ff7b72;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Root-Cause Signal Backtrace (to failure cycle t={last_t})</div><pre class="mono" style="margin:0;color:#c9d1d9;white-space:pre-wrap;line-height:1.45">{body}</pre></div>"##
+        r##"<div id="bt-{id}" style="margin-bottom:10px;padding:10px 12px;background:#161b22;border:1px solid #30363d;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#ff7b72;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em">Interactive Root-Cause Signal Backtrace (click any transition to jump waveform cursor; failure at t={last_t})</div><div class="mono" style="margin:0;color:#c9d1d9;line-height:1.5">{body}</div></div>"##
     )
 }
 

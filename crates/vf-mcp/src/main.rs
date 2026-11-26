@@ -6,10 +6,13 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use vf_apps::agent::{inspect_module, run_trust_audit, scaffold_vfc_contract, TrustAuditConfig};
 use vf_apps::autocheck::{run_autocheck, AutoCheckConfig, CheckStatus};
+use vf_apps::compose::{parse_sub_arg, run_compose, ComposeConfig};
 use vf_apps::fault::{run_fault_analysis, FaultConfig, FaultModel, FaultStatus};
 use vf_apps::power::{parse_upf_file, run_powercheck, PowerCheckConfig, PowerStatus};
+use vf_apps::vip::{render_vip_sva, render_vip_vfc, VIP_CATALOG};
 use vf_dsl::{lower_contract_to_ir, parse_contract, ContractRole};
 use vf_engine::backtrace::{compute_cex_backtrace, format_agent_trace_table};
+use vf_engine::btor_engine::{run_btor, BtorConfig, BtorSolver};
 use vf_engine::cover::{run_cover, CoverConfig};
 use vf_engine::deadend::{check_deadends, DeadEndConfig, DeadEndOutcome};
 use vf_engine::equiv::{check_slec, parse_reset_spec, SlecConfig};
@@ -447,6 +450,38 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["files"]
             }
+        },
+        {
+            "name": "compose_verify",
+            "description": "Automated Hierarchical Assume-Guarantee Composition: proves each submodule Provider contract standalone, blackboxes verified submodule FFs/logic in the top-level SoC, binds Caller contracts (asserting preconditions, assuming guarantees), and proves the top-level Provider contract.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "top_files": { "type": "array", "items": { "type": "string" } },
+                    "top_spec": { "type": "string" },
+                    "top": { "type": "string" },
+                    "subs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "INSTANCE=SPEC.vfc[:RTL1.sv,RTL2.sv][@MOD] entries"
+                    },
+                    "depth": { "type": "integer" },
+                    "solver": { "type": "string" }
+                },
+                "required": ["top_files", "top_spec", "subs"]
+            }
+        },
+        {
+            "name": "get_vip_template",
+            "description": "Turnkey Protocol Verification IP Library: list all 8 built-in bus/ISA VIP protocols (axi4_lite, axi4_full, axi4_stream, apb, ahb_lite, tilelink_ul, wishbone_b4, rvfi) or generate a ready-to-prove .vfc contract or portable SVA bind template.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "protocol": { "type": "string", "description": "Protocol name (omit to list all available VIPs)" },
+                    "module_name": { "type": "string" },
+                    "format": { "type": "string", "enum": ["vfc", "sva"], "description": "Output format (default: vfc)" }
+                }
+            }
         }
     ])
 }
@@ -879,6 +914,109 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<Value> {
             )?;
             Ok(serde_json::to_value(report)?)
         }
+        "compose_verify" => {
+            let top_files: Vec<PathBuf> = str_array(args, "top_files")
+                .into_iter()
+                .map(PathBuf::from)
+                .collect();
+            if top_files.is_empty() {
+                bail!("compose_verify requires non-empty `top_files`");
+            }
+            let top_spec = args
+                .get("top_spec")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("compose_verify requires `top_spec`"))?;
+            let sub_strs = str_array(args, "subs");
+            if sub_strs.is_empty() {
+                bail!("compose_verify requires non-empty `subs`");
+            }
+            let mut submodules = Vec::with_capacity(sub_strs.len());
+            for s in &sub_strs {
+                submodules.push(parse_sub_arg(s)?);
+            }
+            let cfg = ComposeConfig {
+                top_rtl_files: top_files,
+                top_module: args.get("top").and_then(|v| v.as_str()).map(String::from),
+                top_spec_file: PathBuf::from(top_spec),
+                top_params: parse_param_map(args),
+                submodules,
+                depth: args.get("depth").and_then(|v| v.as_u64()).unwrap_or(20) as usize,
+                solver: args
+                    .get("solver")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("z3")
+                    .to_string(),
+                enable_pdr: true,
+            };
+            let res = run_compose(&cfg)?;
+            let leaves: Vec<Value> = res
+                .leaf_results
+                .iter()
+                .map(|l| {
+                    json!({
+                        "instance": l.instance,
+                        "contract": l.contract_name,
+                        "original_ffs": l.original_ffs,
+                        "proved": matches!(l.outcome, ProveOutcome::Proved { .. }),
+                        "winner": l.winner
+                    })
+                })
+                .collect();
+            let (bt, tbl) = match &res.failure_trace {
+                Some(tr) => {
+                    let prop = match &res.top_outcome {
+                        ProveOutcome::Fail { property, .. } => Some(property.as_str()),
+                        _ => None,
+                    };
+                    (
+                        Some(compute_cex_backtrace(&res.top_module, prop, tr)),
+                        Some(format_agent_trace_table(&res.top_module, prop, tr, 12)),
+                    )
+                }
+                None => (None, None),
+            };
+            Ok(json!({
+                "top_module": res.top_module_name,
+                "top_contract": res.top_contract_name,
+                "composed_proved": res.composed_proved,
+                "top_ffs_before_blackbox": res.top_ffs_before_blackbox,
+                "top_ffs_after_blackbox": res.top_ffs_after_blackbox,
+                "top_blackboxed_signals": res.top_blackboxed_signals,
+                "top_winner": res.top_winner,
+                "leaves": leaves,
+                "backtrace": bt,
+                "trace_table": tbl
+            }))
+        }
+        "get_vip_template" => {
+            if let Some(proto) = args.get("protocol").and_then(|v| v.as_str()) {
+                let mod_name = args.get("module_name").and_then(|v| v.as_str());
+                let fmt = args.get("format").and_then(|v| v.as_str()).unwrap_or("vfc");
+                let text = if fmt.eq_ignore_ascii_case("sva") {
+                    render_vip_sva(proto, mod_name)?
+                } else {
+                    render_vip_vfc(proto, mod_name)?
+                };
+                Ok(json!({
+                    "protocol": proto,
+                    "format": fmt,
+                    "template": text
+                }))
+            } else {
+                let list: Vec<Value> = VIP_CATALOG
+                    .iter()
+                    .map(|v| {
+                        json!({
+                            "id": v.id,
+                            "standard": v.standard,
+                            "summary": v.summary,
+                            "default_module": v.default_module
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "vips": list }))
+            }
+        }
         other => bail!("unknown MCP tool '{other}'"),
     }
 }
@@ -893,6 +1031,22 @@ fn prove_with_engine(m: &Module, engine: &str, depth: usize) -> Result<ProveOutc
             },
         ),
         "pdr" => run_pdr(m, &PdrConfig::default()),
+        "btor" | "pono" | "avr" | "btormc" => {
+            let solver = match engine {
+                "pono" => BtorSolver::PonoIc3ia,
+                "avr" => BtorSolver::Avr,
+                "btormc" => BtorSolver::Btormc,
+                _ => BtorSolver::Auto,
+            };
+            run_btor(
+                m,
+                &BtorConfig {
+                    solver,
+                    depth,
+                    ..Default::default()
+                },
+            )
+        }
         _ => Ok(run_portfolio(
             m,
             &PortfolioConfig {

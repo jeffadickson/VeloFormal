@@ -4,28 +4,28 @@
 
 Native Verilog & SystemVerilog formal verification suite written in Rust — combining an embedded [Slang](https://github.com/MikePopoloski/slang) IEEE 1800 frontend, word-level RTL netlist IR, SMT-LIB2 / BTOR2 / AIGER backends, full SymbiYosys & Questa-class Formal Apps, the human-readable `.vfc` v1.0 Contract DSL, a VS Code Language Server (`vf-lsp`), and a native **Model Context Protocol server (`vf-mcp`)** with an **anti-cheating Trust Audit** (`veloformal audit`) so humans and AI coding agents collaborate on mathematically verified silicon.
 
-- **Read the Book**: [***VeloFormal: Formal Verification for the Human & Agentic Era***](book/src/SUMMARY.md) (10 chapters on the Why, the How, Formal Apps, SLEC, ISO 26262, UPF & the Agentic Era)
+- **Read the Book**: [***VeloFormal: Formal Verification for the Human & Agentic Era***](book/src/SUMMARY.md) (14 chapters covering the Why, the How, Formal Apps, SLEC, ISO 26262, UPF, Chip-Scale BTOR2 & Assume-Guarantee Composition, Protocol VIPs, VPlans, OpenTitan Silicon Gauntlet & Visual Waveform Debugging)
 - **Full Language Spec**: [`.vfc` v1.0 Contract Language Specification](docs/VFC_SPEC.md) (complete EBNF grammar, strict type system, formal semantics & SVA translation)
 - **DSL vs. SVA Showcase**: [3-Tier Side-by-Side Comparison (`handshake_pipe` → `packet_fifo` → `secure_crypto_engine`)](examples/22_dsl_vs_sva_showcase/README.md)
-- **Agentic Setup**: [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md) • [`AGENTS.md`](AGENTS.md) • [`skills/veloformal/SKILL.md`](skills/veloformal/SKILL.md)
+- **CI & Agentic Setup**: [`docs/GITHUB_ACTION.md`](docs/GITHUB_ACTION.md) • [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md) • [`AGENTS.md`](AGENTS.md) • [`packaging/mcp/`](packaging/mcp/)
 
 > The previous C#/Python prototype is preserved on the `archive/csharp-prototype` branch and `archive-csharp-prototype` tag.
 
 ## Architecture
 
 ```text
-Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .do)
+Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .do / vplan.json)
   │
-  ▼  vf-slang   — Embedded Slang v9.1 C++20 frontend + IEEE 1800 SVA (`bind`, repetition, `until`) & RTL instrumentation
-  ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, sweep_sequential, coi_prune, chformal, async2sync, clk2fflogic)
-  ▼  vf-smt     — O(N) DAG-shared SMT-LIB2 (QF_BV/QF_ABV), BTOR2, binary AIGER 1.0 bit-blaster, cancellable solver pipe, VCD writer
-  ▼  vf-engine  — BMC, k-Induction, ABC IC3/PDR (`dc2+scorr+pdr`) & Craig Interpolation (`dc2+int`), Per-Property Parallel COI Portfolio (+ Lemma Promotion), Liveness/Fairness, Cover, Vacuity, Dead-End, Backtrace, SLEC
-  ▼  vf-apps    — Formal Apps: AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (UPF), Agent Introspection & Trust Audit
-  ▼  vf-dsl     — `.vfc` v1.0 Contract DSL (brace syntax, strict typing, native IR lowering & IEEE 1800 SVA `bind` export)
-  ▼  vf-lsp     — Native Rust Language Server + VS Code extension (`editors/vscode/`)
-  ▼  vf-mcp     — Native Rust Model Context Protocol (MCP) server for Claude, Cursor, Windsurf, Codex & Antigravity
-  ▼  vf-cli     — `veloformal` CLI (`inspect`, `scaffold`, `audit`, `.sby`, Questa `.do` Tcl, Interactive HTML/SVG Waveform + Backtrace & SARIF/JUnit/JSON)
-  └── vip/      — Reusable Formal Assertion & QFL Library (Ready/Valid, AXI4-Lite, AXI4-Stream, APB, AHB-Lite, Wishbone, TileLink-UL, FIFO, Arbiter, Gray-Code)
+  ▼  vf-slang   — Embedded Slang v9.1 C++20 frontend (packages, 2D packed arrays, interface/modport, instance arrays, streaming, case inside, IEEE 1800 SVA `bind`)
+  ▼  vf-ir      — Word-level RTL netlist IR + passes (opt, sweep_sequential, coi_prune, blackbox_instance, chformal, async2sync, clk2fflogic)
+  ▼  vf-smt     — O(N) DAG-shared SMT-LIB2 (QF_BV/QF_ABV), validated BTOR2, binary AIGER 1.0 bit-blaster, cancellable solver pipe, VCD writer
+  ▼  vf-engine  — BMC, k-Induction, ABC IC3/PDR (`dc2+scorr+pdr`) & Craig Interpolation (`dc2+int`), Word-Level BTOR2 (`pono`/`avr`/`btormc`), Per-Property Parallel COI Portfolio (+ Lemma Promotion), Liveness, Cover, Vacuity, Dead-End, Backtrace, SLEC
+  ▼  vf-apps    — Formal Apps: 18-Check AutoCheck, CoverCheck, Connectivity, Secure (IFT), X-Check, Register Check (CSV/RDL/IP-XACT/APB), CDC/RDC (SDC), Fault (ISO 26262), PowerCheck (UPF), Hierarchical Compose, Turnkey VIP Library (8 protocols), Traceable VPlan, Agent Introspection & Trust Audit
+  ▼  vf-dsl     — `.vfc` v1.0 Contract DSL (brace syntax, strict typing, hierarchical instance lowering & IEEE 1800 SVA `bind` export)
+  ▼  vf-lsp     — Native Rust Language Server + VS Code extension (`editors/vscode/` with AutoCheck & Interactive Waveform Debugger Webviews)
+  ▼  vf-mcp     — Native Rust Model Context Protocol (MCP) server (12 typed tools for Claude, Cursor, Windsurf, Codex & Antigravity)
+  ▼  vf-cli     — `veloformal` CLI (`inspect`, `scaffold`, `audit`, `compose`, `vip`, `vplan`, `.sby`, Questa `.do` Tcl, Interactive SVG Waveform + COI Backtrace & SARIF/JUnit/JSON)
+  └── vip/      — Reusable Formal Assertion & Turnkey Protocol VIP Library (AXI4-Lite, AXI4-Full, AXI4-Stream, APB, AHB-Lite, TileLink-UL, Wishbone B4, RVFI, FIFO, Arbiter, Gray-Code)
 ```
 
 ## Prerequisites
@@ -34,6 +34,7 @@ Verilog / SystemVerilog (.v / .sv / .sby / .vfc / .rdl / .xml / .sdc / .upf / .d
 - C++20 compiler (`g++` 11+ / `clang++` 14+ / MSVC 2022) + `cmake` 3.20+ (plus `ninja` recommended)
 - An SMT-LIB2 solver on `PATH`: `z3` (default), `bitwuzla`, or `cvc5`
 - Optional: `yosys-abc` (or `abc`) for IC3/PDR proofs (`--engine pdr` / `abc pdr` in `.sby`)
+- Optional: `pono`, `avr`, or `btormc` for word-level BTOR2 IC3IA/PDR (`--engine btor|pono|avr|btormc`, auto-joins portfolio when installed)
 
 ## Build & Test
 
@@ -43,22 +44,32 @@ cargo build --release --workspace
 cargo test --workspace
 ```
 
-## Formal for the Human & Agentic Era (`vf-mcp`, `inspect`, `scaffold`, `audit`)
+## Formal for the Human & Agentic Era (`vf-mcp`, `inspect`, `scaffold`, `audit`, `compose`, `vip`, `vplan`)
 
-VeloFormal treats AI coding agents as first-class collaborators alongside human verification engineers — with built-in anti-cheating guardrails (see [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md), [`AGENTS.md`](AGENTS.md), and [`skills/veloformal/SKILL.md`](skills/veloformal/SKILL.md)):
+VeloFormal treats AI coding agents as first-class collaborators alongside human verification engineers — with built-in anti-cheating guardrails (see [`docs/AGENTIC_FORMAL.md`](docs/AGENTIC_FORMAL.md), [`AGENTS.md`](AGENTS.md), and [`packaging/mcp/`](packaging/mcp/)):
 
 ```bash
 # 1. Machine-readable RTL introspection (ports, widths, clock/reset polarity, FSMs, protocols)
 veloformal inspect examples/21_questa_parity/apb_csr.sv --format json
 
-# 2. Auto-scaffold a valid, type-checked starter `.vfc` contract from RTL
+# 2. Auto-scaffold a valid starter `.vfc` contract from RTL or a turnkey bus VIP (8 protocols)
 veloformal scaffold examples/18_vfc_contracts/fifo_rtl.sv -o fifo_starter.vfc
+veloformal vip list
+veloformal vip init axi4_lite --module my_csr_slave -o my_csr_axi.vfc
 
 # 3. 4-Gate Anti-Cheating Trustworthiness Audit (Proof + Dead-End + Vacuity + Mutation Score)
 veloformal audit examples/18_vfc_contracts/counter.sv \
     --spec examples/18_vfc_contracts/counter.vfc -G MAX_VAL=5 --format json
 
-# 4. Native Rust MCP Server (10 typed tools + `.vfc` spec resource + verification prompts)
+# 4. Automated Hierarchical Assume-Guarantee Composition (blackbox verified leaves in top SoC)
+veloformal compose examples/24_hierarchical_compose/heavy_alu_leaf.sv examples/24_hierarchical_compose/soc_top.sv \
+    --top soc_top --spec examples/24_hierarchical_compose/soc_top.vfc \
+    --sub u_alu=examples/24_hierarchical_compose/heavy_alu_leaf.sv:heavy_alu_leaf:examples/24_hierarchical_compose/heavy_alu_leaf.vfc
+
+# 5. Traceable Formal Verification Plan (JSON / Markdown / HTML sign-off matrix)
+veloformal vplan examples/24_hierarchical_compose/soc_vplan.json --format markdown --html soc_vplan.html
+
+# 6. Native Rust MCP Server (12 typed tools + `.vfc` spec resource + verification prompts)
 cargo build --release --bin vf-mcp
 ```
 

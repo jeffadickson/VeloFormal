@@ -256,6 +256,24 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    Inside {
+        width: u32,
+        signed: bool,
+        left: Box<Expr>,
+        ranges: Vec<Expr>,
+    },
+    ValueRange {
+        width: u32,
+        signed: bool,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Streaming {
+        width: u32,
+        signed: bool,
+        slice_size: u64,
+        operands: Vec<Expr>,
+    },
     AssignExpr {
         width: u32,
         signed: bool,
@@ -341,6 +359,9 @@ impl Expr {
             | Expr::Conv { width, .. }
             | Expr::Unary { width, .. }
             | Expr::Binary { width, .. }
+            | Expr::Inside { width, .. }
+            | Expr::ValueRange { width, .. }
+            | Expr::Streaming { width, .. }
             | Expr::AssignExpr { width, .. }
             | Expr::Ternary { width, .. }
             | Expr::Concat { width, .. }
@@ -362,6 +383,9 @@ impl Expr {
             | Expr::Conv { signed, .. }
             | Expr::Unary { signed, .. }
             | Expr::Binary { signed, .. }
+            | Expr::Inside { signed, .. }
+            | Expr::ValueRange { signed, .. }
+            | Expr::Streaming { signed, .. }
             | Expr::AssignExpr { signed, .. }
             | Expr::Ternary { signed, .. }
             | Expr::Concat { signed, .. }

@@ -1,5 +1,6 @@
 pub mod backtrace;
 pub mod bmc;
+pub mod btor_engine;
 pub mod cache;
 pub mod cert;
 pub mod cover;
