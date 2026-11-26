@@ -76,6 +76,23 @@ pub fn run_pdr_cancellable(
     cfg: &PdrConfig,
     cancel: Option<Arc<CancelToken>>,
 ) -> Result<ProveOutcome> {
+    let res = run_pdr_single(m, cfg, cancel.clone());
+    if cfg.strategy == PdrStrategy::PdrSimplified
+        && !cancel.as_ref().is_some_and(|c| c.is_cancelled())
+        && matches!(res, Err(_) | Ok(ProveOutcome::Unknown { .. }))
+    {
+        let mut raw_cfg = cfg.clone();
+        raw_cfg.strategy = PdrStrategy::PdrRaw;
+        return run_pdr_single(m, &raw_cfg, cancel);
+    }
+    res
+}
+
+fn run_pdr_single(
+    m: &Module,
+    cfg: &PdrConfig,
+    cancel: Option<Arc<CancelToken>>,
+) -> Result<ProveOutcome> {
     let has_asserts = m.properties.iter().any(|p| p.kind == PropertyKind::Assert);
     if !has_asserts {
         return Ok(ProveOutcome::Proved { k: 0 });
@@ -106,7 +123,13 @@ pub fn run_pdr_cancellable(
         .with_context(|| format!("failed to write temp AIGER file {}", aig_path.display()))?;
 
     let engine_script = match cfg.strategy {
-        PdrStrategy::PdrSimplified => "strash; dc2; scorr -C 500; dc2; pdr",
+        PdrStrategy::PdrSimplified => {
+            if aig.latches.is_empty() {
+                "strash; dc2; pdr"
+            } else {
+                "strash; dc2; scorr -C 500; dc2; pdr"
+            }
+        }
         PdrStrategy::PdrRaw => "pdr",
         PdrStrategy::Interpolation => "strash; dc2; int -k",
     };

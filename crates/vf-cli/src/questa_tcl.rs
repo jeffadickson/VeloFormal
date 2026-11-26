@@ -50,6 +50,9 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
         "unspecified",
     );
 
+    let mut autocheck_enabled: Vec<String> = Vec::new();
+    let mut autocheck_disabled: Vec<String> = Vec::new();
+
     let resolve = |p: &str| -> PathBuf {
         let pb = PathBuf::from(p);
         if pb.is_absolute() {
@@ -153,26 +156,60 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                 }
                 other => bail!("line {}: unsupported `formal {:?}` directive", line_no + 1, other),
             },
-            "autocheck" => {
-                if toks.get(1).map(String::as_str) == Some("verify") {
+            "autocheck" => match toks.get(1).map(String::as_str) {
+                Some("enable") => {
+                    for cat in flag_all(&toks, "-type") {
+                        autocheck_disabled.retain(|c| !c.eq_ignore_ascii_case(&cat));
+                        if !autocheck_enabled.iter().any(|c| c.eq_ignore_ascii_case(&cat)) {
+                            autocheck_enabled.push(cat);
+                        }
+                    }
+                }
+                Some("disable") => {
+                    for cat in flag_all(&toks, "-type") {
+                        autocheck_enabled.retain(|c| !c.eq_ignore_ascii_case(&cat));
+                        if !autocheck_disabled.iter().any(|c| c.eq_ignore_ascii_case(&cat)) {
+                            autocheck_disabled.push(cat);
+                        }
+                    }
+                }
+                Some("verify") => {
                     let depth = flag_usize(&toks, "-depth").unwrap_or(15);
                     let fsm = flag_all(&toks, "-fsm");
+                    let strict = toks.iter().any(|t| t == "-strict");
+                    let mut cfg = if strict {
+                        AutoCheckConfig::strict()
+                    } else {
+                        AutoCheckConfig::default()
+                    };
+                    cfg.depth = depth;
+                    cfg.fsm_signals = fsm;
+                    cfg.check_overflow |= toks.iter().any(|t| t == "-overflow");
+                    cfg.check_truncation |= toks.iter().any(|t| t == "-truncation");
+                    cfg.check_const_regs |= toks.iter().any(|t| t == "-const_regs");
+                    cfg.check_no_reset |= toks.iter().any(|t| t == "-no_reset");
+                    cfg.check_unread |= toks.iter().any(|t| t == "-unread");
+                    cfg.auto_fsm |= toks.iter().any(|t| t == "-auto_fsm");
+                    cfg.enabled_categories = autocheck_enabled.clone();
+                    cfg.disabled_categories = autocheck_disabled.clone();
+
                     let mut opts = CompileOptions::for_files(files.clone());
                     opts.top = top.clone();
-                    let (m, findings) = run_autocheck(
-                        &opts,
-                        &AutoCheckConfig {
-                            depth,
-                            fsm_signals: fsm,
-                            ..Default::default()
-                        },
-                    )?;
+                    let (m, findings) = run_autocheck(&opts, &cfg)?;
                     report.module_name = m.name.clone();
                     for f in findings {
                         let (status, detail, trace) = match f.status {
-                            CheckStatus::Safe => ("SAFE".into(), "proved safe".into(), None),
+                            CheckStatus::Safe => (
+                                "SAFE".into(),
+                                f.detail.unwrap_or_else(|| "proved safe".into()),
+                                None,
+                            ),
                             CheckStatus::Bug { step, trace } => {
-                                ("BUG".into(), format!("violated at cycle {step}"), Some(trace))
+                                let d = f
+                                    .detail
+                                    .unwrap_or_else(|| format!("violated at cycle {step}"));
+                                let tr = if trace.is_empty() { None } else { Some(trace) };
+                                ("BUG".into(), d, tr)
                             }
                             CheckStatus::Warning(msg) => ("WARN".into(), msg, None),
                             CheckStatus::Unknown => ("UNKNOWN".into(), "inconclusive".into(), None),
@@ -188,7 +225,8 @@ pub fn run_questa_tcl(script_path: &Path) -> Result<SignOffReport> {
                         });
                     }
                 }
-            }
+                _ => {}
+            },
             "covercheck" => {
                 if toks.get(1).map(String::as_str) == Some("verify") {
                     let depth = flag_usize(&toks, "-depth").unwrap_or(15);

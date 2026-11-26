@@ -2,21 +2,24 @@
 
 Formal Apps deliver massive bug-hunting and sign-off value with **zero SVA** (or lightweight declarative specs like CSV, SystemRDL, IP-XACT, and SDC).
 
-## 5.1 AutoCheck — Push-Button RTL Bug Hunting
+## 5.1 AutoCheck — Push-Button RTL Bug Hunting (18 Checks)
 
-AutoCheck instruments elaborated RTL automatically and proves or disproves common hardware defects:
+AutoCheck instruments elaborated RTL automatically and proves or disproves common hardware defects in parallel across CPU cores — with zero SVA or testbench:
 
-- Out-of-bounds memory/array indexing (`oob_memory`)
-- Divide/modulo by zero (`div_by_zero`)
-- Out-of-range dynamic shift amounts `rhs >= width(lhs)` (`shift_overflow`)
-- `unique` / `priority` `case` & `if` overlap/completeness (`unique_priority`)
-- Optional unsigned arithmetic overflow/underflow (`--check-overflow`)
-- FSM deadlock, multi-state FSM livelock, and formally unreachable declared FSM states (`--fsm <state_reg>`)
-- Structural lint: undriven wires, clock-used-as-data (`clock_as_data`), and optional constant-stuck registers (`--check-const-regs`)
+- **Indexing & Memory Safety**: Out-of-bounds memory/unpacked-array indexing (`oob_memory`) and dynamic bit-select / indexed part-select (`vec[idx]`, `vec[idx +: W]`, `vec[idx -: W]`) out-of-bounds (`oob_bitselect`)
+- **Arithmetic & Shift Safety**: Divide/modulo by zero (`div_by_zero`), out-of-range dynamic shift amounts `rhs >= width(lhs)` (`shift_overflow`), optional signed & unsigned add/sub/mul overflow/underflow (`--check-overflow`), and optional formal implicit width-truncation / silent data-loss detection (`--check-truncation`)
+- **Control Flow & Latch Safety**: `unique` / `unique0` / `priority` `case` & `if` overlap/completeness (`unique_priority`), plus **formal reachability-backed inferred latch detection** (`inferred_latch` — proves missing `else` on unreachable states `SAFE` while returning CEX traces for reachable latches, and allows intentional `always_latch`)
+- **Structural & Clocking Hazards**: Combinational feedback loops (`comb_loop`, reported with full cycle path without aborting remaining checks), multi-driver bus contention (`multi_driven`, disjoint slice-aware), undriven wires (`undriven`), clock-used-as-data (`clock_as_data`), and optional unread/dead driven signals (`--check-unread`)
+- **Register & FSM Health**: Automatic FSM state discovery (`--auto-fsm`) or explicit `--fsm <state_reg>` for deadlock (`fsm_deadlock`), multi-state livelock (`fsm_livelock`), and formally unreachable declared states (`fsm_unreachable`), plus optional constant-stuck registers (`--check-const-regs`) and formal unresettable register detection (`--check-no-reset`)
 
 ```bash
+# Default push-button run:
 veloformal autocheck examples/21_questa_parity/fsm_livelock.sv \
     --fsm state --check-const-regs --vcd-dir waves/
+
+# Strict Superlint mode with rule waivers + JSON/SARIF/HTML reports:
+veloformal autocheck rtl.sv --strict --disable unread_signal \
+    --format json --sarif autocheck.sarif --report autocheck.html
 ```
 
 ## 5.2 CoverCheck — Reachable Witnesses & Dead-Code Proofs

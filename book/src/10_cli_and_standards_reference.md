@@ -19,7 +19,7 @@
 | `audit` | 4-Gate Anti-Cheating Trust Audit | `--spec`, `--min-mutation-score`, `--max-mutants`, `--format text\|json` |
 | `proof-core` | COI coverage + minimal assumption core | `--depth` |
 | `mutate` | Formal mutation testing completeness (%) | `--spec`, `--max-mutants`, `--report`, `--format` |
-| `autocheck` | Push-button RTL bug hunting | `--fsm`, `--check-overflow`, `--check-const-regs`, `--vcd-dir` |
+| `autocheck` | Push-button RTL bug hunting (18 checks) | `--strict`, `--auto-fsm`, `--fsm`, `--check-overflow`, `--check-truncation`, `--check-const-regs`, `--check-no-reset`, `--check-unread`, `--enable`, `--disable`, `--format`, `--report`, `--sarif`, `--junit`, `--vcd-dir` |
 | `covercheck` | Branch witnesses & dead-code proofs | `--depth`, `--vcd-dir` |
 | `connectivity` | CSV pin-to-pin routing verification | `--spec` |
 | `secure` | 2-copy Information Flow Tracking | `--source`, `--target`, `--declassify`, `--vcd` |
@@ -51,4 +51,4 @@ veloformal tcl examples/21_questa_parity/run_questa_parity.do \
     --format sarif --report signoff.html > results.sarif
 ```
 
-Supported `.do` directives include `formal compile`, `vlog`, `netlist clock`, `netlist reset`, `formal verify`, `formal contract`, `autocheck verify`, `covercheck verify`, `cdc run`, `xcheck verify`, `regcheck verify` (`-protocol apb`, `-read_latency`), `slec verify` (`-reset`, `-valid_cond`, `-ignore_output`), `fault verify`, `powercheck verify`, and `deadend verify`.
+Supported `.do` directives include `formal compile`, `vlog`, `netlist clock`, `netlist reset`, `formal verify`, `formal contract`, `autocheck enable|disable|verify`, `covercheck verify`, `cdc run`, `xcheck verify`, `regcheck verify` (`-protocol apb`, `-read_latency`), `slec verify` (`-reset`, `-valid_cond`, `-ignore_output`), `fault verify`, `powercheck verify`, and `deadend verify`.

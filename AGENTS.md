@@ -16,7 +16,7 @@ When working in a terminal, use `veloformal` directly with `--format json` where
    ```
 2. **Run zero-SVA bug hunting** before writing specs:
    ```bash
-   veloformal autocheck <rtl.sv> [--fsm <state_reg>]
+   veloformal autocheck <rtl.sv> --auto-fsm [--strict] --format json
    ```
 3. **Scaffold & refine a non-invasive `.vfc` contract** (do NOT pollute production RTL with `` `ifdef FORMAL `` unless explicitly asked):
    ```bash

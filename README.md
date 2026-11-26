@@ -127,8 +127,9 @@ veloformal dump-aiger tests/verilog/pdr_non_inductive.sv -o pdr.aig
 ## Formal Apps (Questa One / Questa Formal Suite Equivalents)
 
 ```bash
-# AutoCheck: push-button RTL bug hunting (OOB memory, div-by-zero, shift-overflow, unique/priority, overflow, FSM deadlock/livelock/unreachable, clock-as-data, const-reg)
-veloformal autocheck examples/21_questa_parity/fsm_livelock.sv --fsm state --check-const-regs --vcd-dir waves/
+# AutoCheck (18 checks): OOB memory & dynamic bit/part-select, div-by-zero, shift-overflow, unique/priority, formal inferred latches, comb loops, multi-drivers, signed/unsigned/mul overflow, width truncation, auto-FSM deadlock/livelock/unreachable, clock-as-data, unresettable/const/unread regs
+veloformal autocheck examples/21_questa_parity/fsm_livelock.sv --auto-fsm --check-const-regs --vcd-dir waves/
+veloformal autocheck rtl.sv --strict --format json --sarif autocheck.sarif --report autocheck.html
 
 # Analyze Fault (ISO 26262): formal SA0/SA1/SEU fault injection, Safe/Masked vs Detected vs Dangerous SPF, SPFM & Diagnostic Coverage
 veloformal fault examples/21_questa_parity/tmr_voter.sv --target r0 --output safe_out

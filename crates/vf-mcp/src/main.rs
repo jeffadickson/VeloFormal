@@ -344,15 +344,22 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "run_autocheck",
-            "description": "Push-button zero-SVA formal RTL bug hunting (OOB memory, div-by-zero, shift-overflow, unique/priority, overflow, FSM deadlock/livelock/unreachable, clock-as-data, const-reg).",
+            "description": "Push-button zero-SVA formal RTL bug hunting (OOB memory & dynamic bit/part-select, div-by-zero, shift-overflow, unique/priority, formal inferred latches, comb loops, multi-drivers, signed/unsigned/mul overflow, formal width truncation, FSM deadlock/livelock/unreachable with auto-FSM, clock-as-data, unresettable/const/unread registers).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "files": { "type": "array", "items": { "type": "string" } },
                     "top": { "type": "string" },
                     "fsm_signals": { "type": "array", "items": { "type": "string" } },
+                    "auto_fsm": { "type": "boolean" },
                     "check_overflow": { "type": "boolean" },
+                    "check_truncation": { "type": "boolean" },
                     "check_const_regs": { "type": "boolean" },
+                    "check_no_reset": { "type": "boolean" },
+                    "check_unread": { "type": "boolean" },
+                    "strict": { "type": "boolean" },
+                    "enable": { "type": "array", "items": { "type": "string" } },
+                    "disable": { "type": "array", "items": { "type": "string" } },
                     "depth": { "type": "integer" }
                 },
                 "required": ["files"]
@@ -573,28 +580,39 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<Value> {
         }
         "run_autocheck" => {
             let opts = compile_opts_from_args(args, "files")?;
-            let fsm_signals = str_array(args, "fsm_signals");
-            let check_overflow = args
+            let strict = args.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);
+            let mut cfg = if strict {
+                AutoCheckConfig::strict()
+            } else {
+                AutoCheckConfig::default()
+            };
+            cfg.fsm_signals = str_array(args, "fsm_signals");
+            cfg.auto_fsm |= args.get("auto_fsm").and_then(|v| v.as_bool()).unwrap_or(false);
+            cfg.check_overflow |= args
                 .get("check_overflow")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let check_const_regs = args
+            cfg.check_truncation |= args
+                .get("check_truncation")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            cfg.check_const_regs |= args
                 .get("check_const_regs")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
+            cfg.check_no_reset |= args
+                .get("check_no_reset")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            cfg.check_unread |= args
+                .get("check_unread")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            cfg.enabled_categories = str_array(args, "enable");
+            cfg.disabled_categories = str_array(args, "disable");
+            cfg.depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
 
-            let (m, findings) = run_autocheck(
-                &opts,
-                &AutoCheckConfig {
-                    depth,
-                    solver: "z3".into(),
-                    check_overflow,
-                    check_const_regs,
-                    fsm_signals,
-                    use_pdr: true,
-                },
-            )?;
+            let (m, findings) = run_autocheck(&opts, &cfg)?;
             let mut bugs = 0usize;
             let mut warnings = 0usize;
             let items: Vec<Value> = findings
@@ -603,16 +621,23 @@ fn dispatch_tool(name: &str, args: &Value) -> Result<Value> {
                     CheckStatus::Safe => json!({
                         "category": f.category,
                         "name": f.name,
-                        "status": "SAFE"
+                        "status": "SAFE",
+                        "detail": f.detail
                     }),
                     CheckStatus::Bug { step, trace } => {
                         bugs += 1;
+                        let trace_table = if trace.is_empty() {
+                            Value::Null
+                        } else {
+                            json!(format_agent_trace_table(&m, None, &trace, 10))
+                        };
                         json!({
                             "category": f.category,
                             "name": f.name,
                             "status": "BUG",
                             "step": step,
-                            "trace_table": format_agent_trace_table(&m, None, &trace, 10)
+                            "detail": f.detail,
+                            "trace_table": trace_table
                         })
                     }
                     CheckStatus::Warning(msg) => {

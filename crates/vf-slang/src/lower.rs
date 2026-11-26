@@ -15,12 +15,22 @@ pub struct InstrumentOptions {
     pub unique_priority_checks: bool,
     /// Emit assertions for out-of-bounds memory/array index accesses (AutoCheck).
     pub oob_memory_checks: bool,
+    /// Emit assertions for dynamic bit-select & indexed part-select out-of-bounds (AutoCheck).
+    pub oob_bitselect_checks: bool,
     /// Emit assertions for divide/modulo by zero (AutoCheck).
     pub div_zero_checks: bool,
-    /// Emit assertions for unsigned arithmetic add/sub overflow/underflow (AutoCheck).
+    /// Emit assertions for unsigned & signed arithmetic add/sub/mul overflow/underflow (AutoCheck).
     pub overflow_checks: bool,
     /// Emit assertions for out-of-range shift amounts (`rhs >= width(lhs)`) (AutoCheck).
     pub shift_overflow_checks: bool,
+    /// Emit formal assertions for inferred latches in `always_comb` / combinational `always @(*)` (AutoCheck).
+    pub latch_checks: bool,
+    /// Emit formal assertions for implicit narrowing width truncation / silent data loss (AutoCheck).
+    pub truncation_checks: bool,
+    /// Track multi-driver bus contention (comb+comb, seq+seq, comb+seq) into `module.lints` (AutoCheck).
+    pub multi_driver_checks: bool,
+    /// Tolerate combinational feedback loops during lowering and record them into `module.lints` (AutoCheck).
+    pub allow_comb_loops: bool,
 }
 
 struct Lowerer {
@@ -35,6 +45,10 @@ struct Lowerer {
     inits: HashMap<SignalId, ConstBits>,
     seq_drivers: HashMap<SignalId, (ExprId, Option<ClockSpec>, Option<AsyncReset>)>,
     comb_drivers: HashMap<SignalId, ExprId>,
+    /// Bitmask of bits already driven by continuous assigns / combinational processes (for multi-driver lint).
+    comb_bit_masks: HashMap<SignalId, (u128, bool)>,
+    /// Signals already flagged as multi-driven (dedup).
+    multi_driven_reported: HashSet<SignalId>,
     /// Local constant loop variables (e.g. `for (int i = 0; i < 8; i++)`).
     const_locals: HashMap<String, i64>,
     /// Local expression bindings (e.g. pure SV function parameters and return vars).
@@ -63,6 +77,8 @@ impl Lowerer {
             inits: HashMap::new(),
             seq_drivers: HashMap::new(),
             comb_drivers: HashMap::new(),
+            comb_bit_masks: HashMap::new(),
+            multi_driven_reported: HashSet::new(),
             const_locals: HashMap::new(),
             local_exprs: HashMap::new(),
             cur_guard: one,
@@ -118,11 +134,12 @@ impl Lowerer {
             self.lower_comb_lhs(&ca.lhs, rhs)?;
         }
 
-        // 3. Lower procedural blocks (`initial`, `always_comb`, `always_ff`, `always`).
+        // 3. Lower procedural blocks (`initial`, `always_comb`, `always_latch`, `always_ff`, `always`).
         for proc in &design.processes {
             match proc.kind.as_str() {
                 "initial" => self.lower_initial(&proc.body)?,
-                "always_comb" | "always_latch" => self.lower_comb_proc(&proc.body)?,
+                "always_comb" => self.lower_comb_proc(&proc.body, false)?,
+                "always_latch" => self.lower_comb_proc(&proc.body, true)?,
                 "always_ff" => self.lower_seq_proc(&proc.body)?,
                 "always" => self.lower_always(&proc.body)?,
                 _ => {}
@@ -155,7 +172,14 @@ impl Lowerer {
 
         let ff_sigs: HashSet<SignalId> = self.module.ffs.iter().map(|f| f.signal).collect();
         for (sig, val) in std::mem::take(&mut self.comb_drivers) {
-            if !ff_sigs.contains(&sig) {
+            if ff_sigs.contains(&sig) {
+                if self.inst.multi_driver_checks {
+                    self.record_multi_driven(
+                        sig,
+                        "driven by both combinational and sequential logic",
+                    );
+                }
+            } else {
                 self.module.comb.push(CombAssign {
                     signal: sig,
                     value: val,
@@ -164,11 +188,69 @@ impl Lowerer {
         }
 
         vf_ir::opt::resolve_self_slices(&mut self.module);
+        if self.inst.allow_comb_loops {
+            let loops = self.module.break_comb_loops();
+            for cyc in loops {
+                let sig = cyc.first().cloned().unwrap_or_default();
+                let path = cyc.join(" -> ");
+                self.module.lints.push(vf_ir::StructuralLint {
+                    category: "comb_loop".into(),
+                    signal: sig,
+                    message: format!("combinational feedback loop: {path}"),
+                    is_bug: true,
+                });
+            }
+        }
         self.module
             .topo_sort_comb()
             .map_err(|e| anyhow!(e))?;
         vf_ir::opt::optimize(&mut self.module);
         Ok(self.module)
+    }
+
+    fn record_multi_driven(&mut self, sig: SignalId, reason: &str) {
+        let name = self.module.signal(sig).name.clone();
+        if name.starts_with('$') {
+            return;
+        }
+        if self.multi_driven_reported.insert(sig) {
+            self.module.lints.push(vf_ir::StructuralLint {
+                category: "multi_driven".into(),
+                signal: name.clone(),
+                message: format!("signal '{name}' has multiple drivers ({reason})"),
+                is_bug: true,
+            });
+        }
+    }
+
+    fn record_comb_driver_bits(&mut self, sig: SignalId, hi: u32, lo: u32, reason: &str) {
+        if !self.inst.multi_driver_checks {
+            return;
+        }
+        let width = self.module.signal(sig).width;
+        let is_wide = width > 128 || hi >= 128;
+        let bit_mask: u128 = if is_wide {
+            u128::MAX
+        } else {
+            let span = hi - lo + 1;
+            let raw = if span >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << span) - 1
+            };
+            raw << lo
+        };
+        let entry = self.comb_bit_masks.entry(sig).or_insert((0, false));
+        let overlap = if is_wide || entry.1 {
+            entry.0 != 0 || entry.1
+        } else {
+            (entry.0 & bit_mask) != 0
+        };
+        entry.0 |= bit_mask;
+        entry.1 |= is_wide;
+        if overlap {
+            self.record_multi_driven(sig, reason);
+        }
     }
 
     fn lower_comb_lhs(&mut self, lhs: &Expr, rhs: ExprId) -> Result<()> {
@@ -179,6 +261,7 @@ impl Lowerer {
                     .find_signal(name)
                     .ok_or_else(|| anyhow!("unknown signal in LHS: {name}"))?;
                 let val = self.module.resize(rhs, *width, false);
+                self.record_comb_driver_bits(sig, width.saturating_sub(1), 0, "overlapping combinational drivers");
                 self.comb_drivers.insert(sig, val);
                 Ok(())
             }
@@ -202,6 +285,7 @@ impl Lowerer {
                     if let Some(sig) = self.module.find_signal(name) {
                         let lo = *bit_offset as u32;
                         let hi = lo + *width - 1;
+                        self.record_comb_driver_bits(sig, hi, lo, "overlapping field assignments");
                         let base = self
                             .comb_drivers
                             .get(&sig)
@@ -228,6 +312,7 @@ impl Lowerer {
                         {
                             let bit =
                                 self.normalize_bit_index(idx as i64, *range_left, *range_right);
+                            self.record_comb_driver_bits(sig, bit, bit, "overlapping bit assignments");
                             let base = self
                                 .comb_drivers
                                 .get(&sig)
@@ -256,6 +341,7 @@ impl Lowerer {
                         let hi = self.normalize_bit_index(*l, *range_left, *range_right);
                         let lo = self.normalize_bit_index(*r, *range_left, *range_right);
                         let (hi, lo) = if hi >= lo { (hi, lo) } else { (lo, hi) };
+                        self.record_comb_driver_bits(sig, hi, lo, "overlapping slice assignments");
                         let base = self
                             .comb_drivers
                             .get(&sig)
@@ -366,10 +452,10 @@ impl Lowerer {
     fn lower_always(&mut self, stmt: &Stmt) -> Result<()> {
         if let Stmt::Timed { timing, body } = stmt {
             match timing.as_ref() {
-                TimingJson::Implicit => self.lower_comb_proc(body),
+                TimingJson::Implicit => self.lower_comb_proc(body, false),
                 TimingJson::SignalEvent { edge, expr } => {
                     if edge == "none" {
-                        self.lower_comb_proc(body)
+                        self.lower_comb_proc(body, false)
                     } else {
                         let clk = self.extract_clock_spec(edge, expr);
                         self.lower_clocked_body(body, clk, None)
@@ -380,16 +466,16 @@ impl Lowerer {
                         matches!(e, TimingJson::SignalEvent { edge, .. } if edge != "none")
                     });
                     if !has_edge {
-                        self.lower_comb_proc(body)
+                        self.lower_comb_proc(body, false)
                     } else {
                         let (clk, async_rst) = self.extract_clock_and_async_reset(events);
                         self.lower_clocked_body(body, clk, async_rst)
                     }
                 }
-                TimingJson::Other => self.lower_comb_proc(body),
+                TimingJson::Other => self.lower_comb_proc(body, false),
             }
         } else {
-            self.lower_comb_proc(stmt)
+            self.lower_comb_proc(stmt, false)
         }
     }
 
@@ -442,14 +528,70 @@ impl Lowerer {
         (clk, async_rst)
     }
 
-    fn lower_comb_proc(&mut self, stmt: &Stmt) -> Result<()> {
+    fn lower_comb_proc(&mut self, stmt: &Stmt, is_latch: bool) -> Result<()> {
         let mut env: HashMap<SignalId, ExprId> = HashMap::new();
         let mut nba_writes: HashMap<SignalId, ExprId> = HashMap::new();
         let mut mem_writes: Vec<MemWrite> = Vec::new();
         let en = self.module.c_bool(true);
         self.lower_stmt(stmt, en, &mut env, &mut nba_writes, &mut mem_writes, false, None)?;
-        for (sig, val) in env {
-            self.comb_drivers.insert(sig, val);
+        for (sig, val) in nba_writes {
+            env.entry(sig).or_insert(val);
+        }
+
+        // Deterministic signal order for reproducible property names and IR ids.
+        let mut entries: Vec<(SignalId, ExprId)> = env.into_iter().collect();
+        entries.sort_by_key(|(s, _)| s.0);
+
+        for (sig, raw_val) in entries {
+            let w = self.module.signal(sig).width;
+            let val = collapse_slice_concat(&mut self.module, raw_val);
+
+            // Detect latch-style self-retention (`Mux(en, new_val, Signal(sig))`) vs full assignment.
+            let final_val = if let Some(latch_cond) = unassigned_path_cond(&mut self.module, val, sig) {
+                let sname = self.module.signal(sig).name.clone();
+                if self.inst.latch_checks && !is_latch && !sname.starts_with('$') {
+                    let no_latch = self.module.logic_not(latch_cond);
+                    let idx = self.prop_counter;
+                    self.prop_counter += 1;
+                    let one = self.module.c_bool(true);
+                    self.add_named_property(
+                        PropertyKind::Assert,
+                        format!("autocheck_inferred_latch_{sname}_{idx}"),
+                        no_latch,
+                        one,
+                        "",
+                    );
+                }
+                if is_latch || self.inst.latch_checks || self.inst.allow_comb_loops {
+                    // Model the latch hold state via an auxiliary FF so `topo_sort_comb()` succeeds
+                    // and the formal solver can prove whether `latch_cond` is reachable or unreachable.
+                    let hold_name = format!("$latch_hold_{sname}_{}", self.aux_ffs.len());
+                    let hold_sig = self.module.add_signal(hold_name, w, false, SignalKind::Reg);
+                    let hold_e = self.module.sig_expr(hold_sig);
+                    let mut cache = HashMap::new();
+                    let replaced = replace_sig_in_expr(&mut self.module, val, sig, hold_e, &mut cache);
+                    self.aux_ffs.push(Ff {
+                        signal: hold_sig,
+                        next: replaced,
+                        init: self.inits.get(&sig).cloned(),
+                        clock: None,
+                        async_reset: None,
+                    });
+                    replaced
+                } else {
+                    val
+                }
+            } else {
+                val
+            };
+
+            self.record_comb_driver_bits(
+                sig,
+                w.saturating_sub(1),
+                0,
+                "overlapping combinational drivers",
+            );
+            self.comb_drivers.insert(sig, final_val);
         }
         Ok(())
     }
@@ -510,12 +652,23 @@ impl Lowerer {
             }
         }
 
+        let mut driven_in_this_block: HashSet<SignalId> = HashSet::new();
         for (sig, val) in nba_writes {
             let arst = arst_vals.remove(&sig);
+            if self.inst.multi_driver_checks && self.seq_drivers.contains_key(&sig) {
+                self.record_multi_driven(sig, "driven by multiple clocked always blocks");
+            }
+            driven_in_this_block.insert(sig);
             self.seq_drivers.insert(sig, (val, clock, arst));
         }
         for (sig, val) in blocking_env {
             let arst = arst_vals.remove(&sig);
+            if self.inst.multi_driver_checks
+                && !driven_in_this_block.contains(&sig)
+                && self.seq_drivers.contains_key(&sig)
+            {
+                self.record_multi_driven(sig, "driven by multiple clocked always blocks");
+            }
             self.seq_drivers.entry(sig).or_insert((val, clock, arst));
         }
         self.module.mem_writes.extend(mem_writes);
@@ -1567,6 +1720,17 @@ impl Lowerer {
                         } else {
                             let w = self.module.signal(sig).width;
                             let sel_e = self.lower_expr(selector, target)?;
+                            if self.inst.oob_bitselect_checks {
+                                self.emit_bitselect_oob_check(
+                                    "write",
+                                    sel_e,
+                                    selector.is_signed(),
+                                    w,
+                                    *range_left,
+                                    *range_right,
+                                    guard,
+                                );
+                            }
                             let sel_w = self.module.resize(sel_e, w, false);
                             let one = self.module.c_u64(w, 1);
                             let mask = self.module.intern(w, ExprKind::Shl(one, sel_w));
@@ -1732,6 +1896,45 @@ impl Lowerer {
             } => {
                 let op_signed = operand.is_signed();
                 let v = self.lower_expr(operand, env)?;
+                let src_w = self.module.width(v);
+                if self.inst.truncation_checks && src_w > *width {
+                    let drop_w = src_w - *width;
+                    let upper = self.module.slice(v, src_w - 1, *width);
+                    let zeros = self.module.c_u64(drop_w, 0);
+                    let no_loss = if op_signed {
+                        let ones = self.module.c_bits(ConstBits::new(drop_w, "1".repeat(drop_w as usize)));
+                        let sign_bit = self.module.slice(v, *width - 1, *width - 1);
+                        let upper_zero = self.module.intern(1, ExprKind::Eq(upper, zeros));
+                        let upper_ones = self.module.intern(1, ExprKind::Eq(upper, ones));
+                        self.module.mux(sign_bit, upper_ones, upper_zero)
+                    } else {
+                        self.module.intern(1, ExprKind::Eq(upper, zeros))
+                    };
+                    let trivially_safe = match &self.module.expr(v).kind {
+                        ExprKind::Const(c) => {
+                            let hi_bits = &c.bits[..drop_w as usize];
+                            if op_signed {
+                                let sb = c.bits.as_bytes()[drop_w as usize] as char;
+                                hi_bits.chars().all(|ch| ch == sb)
+                            } else {
+                                hi_bits.chars().all(|ch| ch == '0')
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !trivially_safe {
+                        let idx = self.prop_counter;
+                        self.prop_counter += 1;
+                        let guard = self.cur_guard;
+                        self.add_named_property(
+                            PropertyKind::Assert,
+                            format!("autocheck_width_truncation_{idx}"),
+                            no_loss,
+                            guard,
+                            "",
+                        );
+                    }
+                }
                 Ok(self.module.resize(v, *width, op_signed))
             }
             Expr::Unary {
@@ -1837,23 +2040,83 @@ impl Lowerer {
                                 "",
                             );
                         }
-                        if self.inst.overflow_checks && !*signed && matches!(op.as_str(), "Add" | "Subtract") {
-                            let ew = *width + 1;
-                            let le = self.module.resize(l, ew, false);
-                            let re = self.module.resize(r, ew, false);
-                            let ext_op = if op == "Add" {
-                                self.module.intern(ew, ExprKind::Add(le, re))
+                        if self.inst.overflow_checks && matches!(op.as_str(), "Add" | "Subtract") {
+                            if !*signed {
+                                let ew = *width + 1;
+                                let le = self.module.resize(l, ew, false);
+                                let re = self.module.resize(r, ew, false);
+                                let ext_op = if op == "Add" {
+                                    self.module.intern(ew, ExprKind::Add(le, re))
+                                } else {
+                                    self.module.intern(ew, ExprKind::Sub(le, re))
+                                };
+                                let carry = self.module.slice(ext_op, *width, *width);
+                                let no_ovf = self.module.logic_not(carry);
+                                let idx = self.prop_counter;
+                                self.prop_counter += 1;
+                                let guard = self.cur_guard;
+                                self.add_named_property(
+                                    PropertyKind::Assert,
+                                    format!("autocheck_{}_overflow_{idx}", op.to_ascii_lowercase()),
+                                    no_ovf,
+                                    guard,
+                                    "",
+                                );
+                            } else if *width >= 2 {
+                                let res_s = if op == "Add" {
+                                    self.module.intern(*width, ExprKind::Add(l, r))
+                                } else {
+                                    self.module.intern(*width, ExprKind::Sub(l, r))
+                                };
+                                let msb = *width - 1;
+                                let l_msb = self.module.slice(l, msb, msb);
+                                let r_msb = self.module.slice(r, msb, msb);
+                                let res_msb = self.module.slice(res_s, msb, msb);
+                                let sign_cond = if op == "Add" {
+                                    self.module.intern(1, ExprKind::Eq(l_msb, r_msb))
+                                } else {
+                                    self.module.intern(1, ExprKind::Ne(l_msb, r_msb))
+                                };
+                                let flipped = self.module.intern(1, ExprKind::Ne(res_msb, l_msb));
+                                let ovf = self.module.logic_and(sign_cond, flipped);
+                                let no_ovf = self.module.logic_not(ovf);
+                                let idx = self.prop_counter;
+                                self.prop_counter += 1;
+                                let guard = self.cur_guard;
+                                self.add_named_property(
+                                    PropertyKind::Assert,
+                                    format!("autocheck_s{}_overflow_{idx}", op.to_ascii_lowercase()),
+                                    no_ovf,
+                                    guard,
+                                    "",
+                                );
+                            }
+                        }
+                        if self.inst.overflow_checks && op == "Multiply" && *width >= 2 && *width <= 64 {
+                            let ew = *width * 2;
+                            let le = self.module.resize(l, ew, *signed);
+                            let re = self.module.resize(r, ew, *signed);
+                            let prod = self.module.intern(ew, ExprKind::Mul(le, re));
+                            let upper = self.module.slice(prod, ew - 1, *width);
+                            let zeros = self.module.c_u64(*width, 0);
+                            let no_ovf = if *signed {
+                                let ones = self
+                                    .module
+                                    .c_bits(ConstBits::new(*width, "1".repeat(*width as usize)));
+                                let sign_bit = self.module.slice(prod, *width - 1, *width - 1);
+                                let u_zero = self.module.intern(1, ExprKind::Eq(upper, zeros));
+                                let u_ones = self.module.intern(1, ExprKind::Eq(upper, ones));
+                                self.module.mux(sign_bit, u_ones, u_zero)
                             } else {
-                                self.module.intern(ew, ExprKind::Sub(le, re))
+                                self.module.intern(1, ExprKind::Eq(upper, zeros))
                             };
-                            let carry = self.module.slice(ext_op, *width, *width);
-                            let no_ovf = self.module.logic_not(carry);
                             let idx = self.prop_counter;
                             self.prop_counter += 1;
                             let guard = self.cur_guard;
+                            let tag = if *signed { "smul" } else { "mul" };
                             self.add_named_property(
                                 PropertyKind::Assert,
-                                format!("autocheck_{}_overflow_{idx}", op.to_ascii_lowercase()),
+                                format!("autocheck_{tag}_overflow_{idx}"),
                                 no_ovf,
                                 guard,
                                 "",
@@ -1994,6 +2257,18 @@ impl Lowerer {
                 } else {
                     let w = self.module.width(base);
                     let sel = self.lower_expr(selector, env)?;
+                    if self.inst.oob_bitselect_checks {
+                        let guard = self.cur_guard;
+                        self.emit_bitselect_oob_check(
+                            "read",
+                            sel,
+                            selector.is_signed(),
+                            w,
+                            *range_left,
+                            *range_right,
+                            guard,
+                        );
+                    }
                     let sel = self.module.resize(sel, w, false);
                     let shifted = self.module.intern(w, ExprKind::Lshr(base, sel));
                     Ok(self.module.slice(shifted, 0, 0))
@@ -2065,8 +2340,56 @@ impl Lowerer {
                     }
                     ("indexed_up", None, _) => {
                         let w = self.module.width(base);
-                        let shift = self.lower_expr(left.as_ref().unwrap(), env)?;
-                        let shift = self.module.resize(shift, w, false);
+                        let shift_raw = self.lower_expr(left.as_ref().unwrap(), env)?;
+                        if self.inst.oob_bitselect_checks {
+                            let sw = self.module.width(shift_raw);
+                            let cmp_w = sw.max(((w as u64).max(1).ilog2() + 3).max(4));
+                            let se = self.module.resize(shift_raw, cmp_w, false);
+                            let slice_w = self.module.c_u64(cmp_w, *width as u64);
+                            let end = self.module.intern(cmp_w, ExprKind::Add(se, slice_w));
+                            let limit = self.module.c_u64(cmp_w, w as u64);
+                            let in_bounds = self.module.intern(1, ExprKind::Ule(end, limit));
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            let guard = self.cur_guard;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_oob_bitselect_part_{idx}"),
+                                in_bounds,
+                                guard,
+                                "",
+                            );
+                        }
+                        let shift = self.module.resize(shift_raw, w, false);
+                        let shifted = self.module.intern(w, ExprKind::Lshr(base, shift));
+                        Ok(self.module.slice(shifted, *width - 1, 0))
+                    }
+                    ("indexed_down", None, _) => {
+                        let w = self.module.width(base);
+                        let hi_raw = self.lower_expr(left.as_ref().unwrap(), env)?;
+                        if self.inst.oob_bitselect_checks {
+                            let sw = self.module.width(hi_raw);
+                            let cmp_w = sw.max(((w as u64).max(1).ilog2() + 3).max(4));
+                            let he = self.module.resize(hi_raw, cmp_w, false);
+                            let min_hi = self.module.c_u64(cmp_w, (*width - 1) as u64);
+                            let max_hi = self.module.c_u64(cmp_w, (w - 1) as u64);
+                            let ge_min = self.module.intern(1, ExprKind::Ule(min_hi, he));
+                            let le_max = self.module.intern(1, ExprKind::Ule(he, max_hi));
+                            let in_bounds = self.module.logic_and(ge_min, le_max);
+                            let idx = self.prop_counter;
+                            self.prop_counter += 1;
+                            let guard = self.cur_guard;
+                            self.add_named_property(
+                                PropertyKind::Assert,
+                                format!("autocheck_oob_bitselect_part_{idx}"),
+                                in_bounds,
+                                guard,
+                                "",
+                            );
+                        }
+                        let hi_w = self.module.resize(hi_raw, w, false);
+                        let sub_amt = self.module.c_u64(w, (*width - 1) as u64);
+                        let shift = self.module.intern(w, ExprKind::Sub(hi_w, sub_amt));
                         let shifted = self.module.intern(w, ExprKind::Lshr(base, shift));
                         Ok(self.module.slice(shifted, *width - 1, 0))
                     }
@@ -2345,6 +2668,348 @@ impl Lowerer {
             _ => None,
         }
     }
+    fn emit_bitselect_oob_check(
+        &mut self,
+        dir: &str,
+        sel: ExprId,
+        sel_signed: bool,
+        vec_width: u32,
+        range_left: Option<i64>,
+        range_right: Option<i64>,
+        guard: ExprId,
+    ) {
+        let (lo_i, hi_i) = match (range_left, range_right) {
+            (Some(l), Some(r)) => (l.min(r), l.max(r)),
+            _ => (0i64, vec_width as i64 - 1),
+        };
+        let sw = self.module.width(sel);
+        // Statically in-bounds unsigned selector on `[vec_width-1:0]` needs no assertion.
+        if !sel_signed && lo_i == 0 && hi_i == (vec_width as i64 - 1) && sw < 64 && (1u128 << sw) <= vec_width as u128 {
+            return;
+        }
+        let in_bounds = if !sel_signed && lo_i >= 0 {
+            let max_u = hi_i as u64;
+            let needed = (max_u.max(1).ilog2() + 2).max(2);
+            let cmp_w = sw.max(needed);
+            let se = self.module.resize(sel, cmp_w, false);
+            let hi_c = self.module.c_u64(cmp_w, max_u);
+            let le_hi = self.module.intern(1, ExprKind::Ule(se, hi_c));
+            if lo_i == 0 {
+                le_hi
+            } else {
+                let lo_c = self.module.c_u64(cmp_w, lo_i as u64);
+                let ge_lo = self.module.intern(1, ExprKind::Ule(lo_c, se));
+                self.module.logic_and(ge_lo, le_hi)
+            }
+        } else {
+            let cmp_w = sw.max(32) + 1;
+            let se = self.module.resize(sel, cmp_w, sel_signed);
+            let lo_c = self.module.c_bits(ConstBits::from_i64(cmp_w, lo_i));
+            let hi_c = self.module.c_bits(ConstBits::from_i64(cmp_w, hi_i));
+            let ge_lo = self.module.intern(1, ExprKind::Sle(lo_c, se));
+            let le_hi = self.module.intern(1, ExprKind::Sle(se, hi_c));
+            self.module.logic_and(ge_lo, le_hi)
+        };
+        let idx = self.prop_counter;
+        self.prop_counter += 1;
+        self.add_named_property(
+            PropertyKind::Assert,
+            format!("autocheck_oob_bitselect_{dir}_{idx}"),
+            in_bounds,
+            guard,
+            "",
+        );
+    }
+}
+
+/// Simplify nested `Slice(Concat(...), hi, lo)` nodes created by sequential bit-slice updates
+/// (e.g. `y[0] = a; y[1] = b;`) so fully assigned vectors have no residual self-references.
+fn collapse_slice_concat(module: &mut Module, expr: ExprId) -> ExprId {
+    let mut cache = HashMap::new();
+    collapse_slice_concat_inner(module, expr, &mut cache)
+}
+
+fn collapse_slice_concat_inner(
+    module: &mut Module,
+    expr: ExprId,
+    cache: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    if let Some(&r) = cache.get(&expr) {
+        return r;
+    }
+    let node = module.expr(expr).clone();
+    let res = match node.kind {
+        ExprKind::Slice { expr: inner, hi, lo } => {
+            let inner = collapse_slice_concat_inner(module, inner, cache);
+            if let ExprKind::Concat(parts) = module.expr(inner).kind.clone() {
+                let total_w = module.width(inner);
+                let mut cur_hi = total_w;
+                let mut out_parts = Vec::new();
+                for p in parts {
+                    let pw = module.width(p);
+                    let p_lo = cur_hi - pw;
+                    let p_hi = cur_hi - 1;
+                    cur_hi = p_lo;
+                    if hi >= p_lo && lo <= p_hi {
+                        let sub_hi = hi.min(p_hi) - p_lo;
+                        let sub_lo = lo.max(p_lo) - p_lo;
+                        let sliced = if sub_hi == pw - 1 && sub_lo == 0 {
+                            p
+                        } else {
+                            module.slice(p, sub_hi, sub_lo)
+                        };
+                        out_parts.push(sliced);
+                    }
+                }
+                if !out_parts.is_empty() {
+                    module.concat(out_parts)
+                } else {
+                    module.slice(inner, hi, lo)
+                }
+            } else {
+                module.slice(inner, hi, lo)
+            }
+        }
+        ExprKind::Mux {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            let c = collapse_slice_concat_inner(module, cond, cache);
+            let t = collapse_slice_concat_inner(module, then_val, cache);
+            let e = collapse_slice_concat_inner(module, else_val, cache);
+            module.mux(c, t, e)
+        }
+        ExprKind::Concat(parts) => {
+            let mapped: Vec<ExprId> = parts
+                .iter()
+                .map(|&p| collapse_slice_concat_inner(module, p, cache))
+                .collect();
+            module.concat(mapped)
+        }
+        _ => expr,
+    };
+    cache.insert(expr, res);
+    res
+}
+
+/// Extract the exact combinational path predicate under which `expr` retains `Signal(sig)`
+/// (indicating an unassigned path / inferred latch inside `always_comb`). Returns `None` if
+/// every path assigns `sig` (or if `sig` appears only inside a genuine combinational feedback loop).
+fn unassigned_path_cond(module: &mut Module, expr: ExprId, sig: SignalId) -> Option<ExprId> {
+    match module.expr(expr).kind.clone() {
+        ExprKind::Signal(s) if s == sig => Some(module.c_bool(true)),
+        ExprKind::Slice { expr: inner, .. } => {
+            if matches!(module.expr(inner).kind, ExprKind::Signal(s) if s == sig) {
+                Some(module.c_bool(true))
+            } else {
+                None
+            }
+        }
+        ExprKind::Mux {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            let t = unassigned_path_cond(module, then_val, sig);
+            let e = unassigned_path_cond(module, else_val, sig);
+            match (t, e) {
+                (None, None) => None,
+                (Some(tc), None) => Some(module.logic_and(cond, tc)),
+                (None, Some(ec)) => {
+                    let nc = module.logic_not(cond);
+                    Some(module.logic_and(nc, ec))
+                }
+                (Some(tc), Some(ec)) => {
+                    let a = module.logic_and(cond, tc);
+                    let nc = module.logic_not(cond);
+                    let b = module.logic_and(nc, ec);
+                    Some(module.logic_or(a, b))
+                }
+            }
+        }
+        ExprKind::Concat(parts) => {
+            let mut acc: Option<ExprId> = None;
+            for p in parts {
+                if let Some(pc) = unassigned_path_cond(module, p, sig) {
+                    acc = Some(match acc {
+                        None => pc,
+                        Some(prev) => module.logic_or(prev, pc),
+                    });
+                }
+            }
+            acc
+        }
+        _ => None,
+    }
+}
+
+/// Replace all leaf occurrences of `Signal(target)` inside `expr` with `replacement`.
+fn replace_sig_in_expr(
+    module: &mut Module,
+    expr: ExprId,
+    target: SignalId,
+    replacement: ExprId,
+    cache: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    if let Some(&r) = cache.get(&expr) {
+        return r;
+    }
+    let node = module.expr(expr).clone();
+    let res = match node.kind {
+        ExprKind::Signal(s) if s == target => replacement,
+        ExprKind::Const(_) | ExprKind::Signal(_) => expr,
+        ExprKind::Not(a) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.intern(node.width, ExprKind::Not(a))
+        }
+        ExprKind::Neg(a) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.intern(node.width, ExprKind::Neg(a))
+        }
+        ExprKind::RedAnd(a) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.intern(1, ExprKind::RedAnd(a))
+        }
+        ExprKind::RedOr(a) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.intern(1, ExprKind::RedOr(a))
+        }
+        ExprKind::RedXor(a) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.intern(1, ExprKind::RedXor(a))
+        }
+        ExprKind::Slice { expr: a, hi, lo } => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.slice(a, hi, lo)
+        }
+        ExprKind::Zext { expr: a, width } => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.resize(a, width, false)
+        }
+        ExprKind::Sext { expr: a, width } => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            module.resize(a, width, true)
+        }
+        ExprKind::MemRead { mem, addr } => {
+            let addr = replace_sig_in_expr(module, addr, target, replacement, cache);
+            module.intern(node.width, ExprKind::MemRead { mem, addr })
+        }
+        ExprKind::Mux {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            let c = replace_sig_in_expr(module, cond, target, replacement, cache);
+            let t = replace_sig_in_expr(module, then_val, target, replacement, cache);
+            let e = replace_sig_in_expr(module, else_val, target, replacement, cache);
+            module.mux(c, t, e)
+        }
+        ExprKind::Concat(parts) => {
+            let mapped: Vec<ExprId> = parts
+                .iter()
+                .map(|&p| replace_sig_in_expr(module, p, target, replacement, cache))
+                .collect();
+            module.concat(mapped)
+        }
+        ExprKind::Add(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Add(a, b))
+        }
+        ExprKind::Sub(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Sub(a, b))
+        }
+        ExprKind::Mul(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Mul(a, b))
+        }
+        ExprKind::UDiv(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::UDiv(a, b))
+        }
+        ExprKind::SDiv(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::SDiv(a, b))
+        }
+        ExprKind::UMod(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::UMod(a, b))
+        }
+        ExprKind::SMod(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::SMod(a, b))
+        }
+        ExprKind::And(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::And(a, b))
+        }
+        ExprKind::Or(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Or(a, b))
+        }
+        ExprKind::Xor(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Xor(a, b))
+        }
+        ExprKind::Shl(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Shl(a, b))
+        }
+        ExprKind::Lshr(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Lshr(a, b))
+        }
+        ExprKind::Ashr(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(node.width, ExprKind::Ashr(a, b))
+        }
+        ExprKind::Eq(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Eq(a, b))
+        }
+        ExprKind::Ne(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Ne(a, b))
+        }
+        ExprKind::Ult(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Ult(a, b))
+        }
+        ExprKind::Ule(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Ule(a, b))
+        }
+        ExprKind::Slt(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Slt(a, b))
+        }
+        ExprKind::Sle(a, b) => {
+            let a = replace_sig_in_expr(module, a, target, replacement, cache);
+            let b = replace_sig_in_expr(module, b, target, replacement, cache);
+            module.intern(1, ExprKind::Sle(a, b))
+        }
+    };
+    cache.insert(expr, res);
+    res
 }
 
 fn unwrap_single_stmt(stmt: &Stmt) -> Option<&Stmt> {

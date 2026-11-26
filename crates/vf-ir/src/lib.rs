@@ -304,6 +304,16 @@ pub struct Property {
     pub source: Option<String>,
 }
 
+/// Structural lint finding detected during RTL lowering (e.g., multi-driver contention, comb loops).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructuralLint {
+    pub category: String,
+    pub signal: String,
+    pub message: String,
+    /// When true, this structural issue is a hard RTL bug rather than a soft warning.
+    pub is_bug: bool,
+}
+
 /// Flattened, word-level synchronous RTL transition system (Yosys RTLIL equivalent).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Module {
@@ -319,6 +329,8 @@ pub struct Module {
     pub ffs: Vec<Ff>,
     pub mem_writes: Vec<MemWrite>,
     pub properties: Vec<Property>,
+    #[serde(default)]
+    pub lints: Vec<StructuralLint>,
 }
 
 impl Module {
@@ -642,6 +654,83 @@ impl Module {
         let old = std::mem::take(&mut self.comb);
         self.comb = order.into_iter().map(|i| old[i].clone()).collect();
         Ok(())
+    }
+
+    /// Detect all combinational feedback loops, break each cycle by removing one cyclic
+    /// `CombAssign` back-edge, and return the signal-name paths (e.g. `["a", "b", "a"]`)
+    /// so AutoCheck can report every loop cleanly while still verifying the rest of the RTL.
+    pub fn break_comb_loops(&mut self) -> Vec<Vec<String>> {
+        let mut loops = Vec::new();
+        loop {
+            let comb_map: HashMap<SignalId, usize> = self
+                .comb
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.signal, i))
+                .collect();
+            let n = self.comb.len();
+            let mut state = vec![0u8; n];
+            let mut stack: Vec<usize> = Vec::new();
+            let mut found_cycle: Option<(usize, Vec<String>)> = None;
+
+            fn dfs_find(
+                idx: usize,
+                module: &Module,
+                comb_map: &HashMap<SignalId, usize>,
+                state: &mut [u8],
+                stack: &mut Vec<usize>,
+                found: &mut Option<(usize, Vec<String>)>,
+            ) {
+                if found.is_some() {
+                    return;
+                }
+                if state[idx] == 2 {
+                    return;
+                }
+                if state[idx] == 1 {
+                    if let Some(pos) = stack.iter().position(|&x| x == idx) {
+                        let mut path: Vec<String> = stack[pos..]
+                            .iter()
+                            .map(|&i| module.signal(module.comb[i].signal).name.clone())
+                            .collect();
+                        path.push(module.signal(module.comb[idx].signal).name.clone());
+                        *found = Some((idx, path));
+                    }
+                    return;
+                }
+                state[idx] = 1;
+                stack.push(idx);
+                let mut deps = Vec::new();
+                collect_signals(module, module.comb[idx].value, &mut deps);
+                for sig in deps {
+                    if let Some(&dep_idx) = comb_map.get(&sig) {
+                        dfs_find(dep_idx, module, comb_map, state, stack, found);
+                        if found.is_some() {
+                            break;
+                        }
+                    }
+                }
+                stack.pop();
+                state[idx] = 2;
+            }
+
+            for i in 0..n {
+                if state[i] == 0 {
+                    dfs_find(i, self, &comb_map, &mut state, &mut stack, &mut found_cycle);
+                    if found_cycle.is_some() {
+                        break;
+                    }
+                }
+            }
+
+            if let Some((drop_idx, path)) = found_cycle {
+                loops.push(path);
+                self.comb.remove(drop_idx);
+            } else {
+                break;
+            }
+        }
+        loops
     }
 }
 

@@ -1,21 +1,62 @@
 use anyhow::Result;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::thread;
 use vf_engine::cover::{run_cover, CoverConfig};
 use vf_engine::kind::{run_kinduction, ProveConfig, ProveOutcome};
 use vf_engine::pdr::{run_pdr, PdrConfig};
-use vf_ir::{ConstBits, ExprId, ExprKind, Module, Property, PropertyKind, SignalId, SignalKind};
+use vf_ir::{
+    collect_signals, ConstBits, ExprId, ExprKind, Module, Property, PropertyKind, SignalId,
+    SignalKind,
+};
 use vf_slang::{compile_to_ir_with_options, CompileOptions, InstrumentOptions};
 use vf_smt::solver::TraceFrame;
+
+/// All supported AutoCheck rule categories (usable with `--enable` / `--disable` and Questa Tcl).
+pub const ALL_AUTOCHECK_CATEGORIES: &[&str] = &[
+    "oob_memory",
+    "oob_bitselect",
+    "div_by_zero",
+    "shift_overflow",
+    "unique_priority",
+    "inferred_latch",
+    "overflow",
+    "width_truncation",
+    "comb_loop",
+    "multi_driven",
+    "clock_as_data",
+    "undriven",
+    "unread_signal",
+    "const_reg",
+    "no_reset_reg",
+    "fsm_deadlock",
+    "fsm_livelock",
+    "fsm_unreachable",
+];
 
 #[derive(Debug, Clone)]
 pub struct AutoCheckConfig {
     pub depth: usize,
     pub solver: String,
+    /// Check unsigned & signed add/sub/mul arithmetic overflow/underflow.
     pub check_overflow: bool,
+    /// Check formal implicit narrowing width truncation (silent data loss).
+    pub check_truncation: bool,
     /// Check whether any initialized user FF is provably stuck constant forever (`reg == init`).
     pub check_const_regs: bool,
-    /// Optional FSM state register names to check for deadlock, livelock, and unreachable states.
+    /// Check formally whether any uninitialized FF is NOT cleared when the detected reset input is active.
+    pub check_no_reset: bool,
+    /// Check for driven internal signals never read by any output, memory, or property.
+    pub check_unread: bool,
+    /// Automatically discover FSM state registers and run deadlock/livelock/unreachable checks.
+    pub auto_fsm: bool,
+    /// Optional explicit FSM state register names to check for deadlock, livelock, and unreachable states.
     pub fsm_signals: Vec<String>,
+    /// Optional allowlist of categories to run (empty = run all configured categories).
+    pub enabled_categories: Vec<String>,
+    /// Optional denylist / waiver list of categories to skip.
+    pub disabled_categories: Vec<String>,
     pub use_pdr: bool,
 }
 
@@ -25,10 +66,48 @@ impl Default for AutoCheckConfig {
             depth: 15,
             solver: "z3".to_string(),
             check_overflow: false,
+            check_truncation: false,
             check_const_regs: false,
+            check_no_reset: false,
+            check_unread: false,
+            auto_fsm: false,
             fsm_signals: Vec::new(),
+            enabled_categories: Vec::new(),
+            disabled_categories: Vec::new(),
             use_pdr: true,
         }
+    }
+}
+
+impl AutoCheckConfig {
+    /// Strict preset enabling all opt-in checks (overflow, truncation, const-reg, no-reset, unread, auto-FSM).
+    pub fn strict() -> Self {
+        Self {
+            check_overflow: true,
+            check_truncation: true,
+            check_const_regs: true,
+            check_no_reset: true,
+            check_unread: true,
+            auto_fsm: true,
+            ..Default::default()
+        }
+    }
+
+    /// Returns true if `category` is permitted by `enabled_categories` and `disabled_categories`.
+    pub fn is_category_enabled(&self, category: &str) -> bool {
+        if self
+            .disabled_categories
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(category))
+        {
+            return false;
+        }
+        if self.enabled_categories.is_empty() {
+            return true;
+        }
+        self.enabled_categories
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case(category))
     }
 }
 
@@ -45,62 +124,100 @@ pub struct AutoCheckFinding {
     pub category: String,
     pub name: String,
     pub status: CheckStatus,
+    pub detail: Option<String>,
 }
 
-/// Questa AutoCheck equivalent: push-button formal RTL bug hunting requiring ZERO SVA or testbench.
-/// Automatically checks:
-/// - Out-of-bounds memory/array indexing
-/// - Divide/modulo by zero
-/// - Out-of-range shift amounts (`rhs >= width(lhs)`)
-/// - `unique` / `priority` `case` & `if` overlap and completeness
-/// - Optional unsigned arithmetic overflow/underflow
-/// - FSM deadlock, FSM livelock, and FSM unreachable declared states
-/// - Structural lint (undriven internal wires, clock-used-as-data)
-/// - Optional constant-stuck register detection
+/// Questa AutoCheck / Jasper Superlint equivalent: push-button formal RTL bug hunting requiring
+/// ZERO SVA or testbench. Automatically checks:
+/// - Out-of-bounds memory/array indexing (`oob_memory`)
+/// - Dynamic bit-select & indexed part-select out-of-bounds (`oob_bitselect`)
+/// - Divide/modulo by zero (`div_by_zero`)
+/// - Out-of-range shift amounts (`shift_overflow`)
+/// - `unique` / `unique0` / `priority` `case` & `if` overlap and completeness (`unique_priority`)
+/// - Formal reachability-backed inferred latch detection in `always_comb` (`inferred_latch`)
+/// - Combinational feedback loops (`comb_loop`) and multi-driver contention (`multi_driven`)
+/// - Optional signed & unsigned add/sub/mul arithmetic overflow/underflow (`overflow`)
+/// - Optional formal implicit width-truncation / data-loss detection (`width_truncation`)
+/// - FSM deadlock, livelock, and unreachable declared states (explicit `--fsm` or `--auto-fsm`)
+/// - Structural lint (undriven internal wires, clock-used-as-data, optional unread signals)
+/// - Optional constant-stuck register (`const_reg`) and unresettable register (`no_reset_reg`) checks
 pub fn run_autocheck(
     compile: &CompileOptions,
     cfg: &AutoCheckConfig,
 ) -> Result<(Module, Vec<AutoCheckFinding>)> {
     let inst = InstrumentOptions {
         branch_covers: false,
-        unique_priority_checks: true,
-        oob_memory_checks: true,
-        div_zero_checks: true,
-        overflow_checks: cfg.check_overflow,
-        shift_overflow_checks: true,
+        unique_priority_checks: cfg.is_category_enabled("unique_priority"),
+        oob_memory_checks: cfg.is_category_enabled("oob_memory"),
+        oob_bitselect_checks: cfg.is_category_enabled("oob_bitselect"),
+        div_zero_checks: cfg.is_category_enabled("div_by_zero"),
+        overflow_checks: cfg.check_overflow && cfg.is_category_enabled("overflow"),
+        shift_overflow_checks: cfg.is_category_enabled("shift_overflow"),
+        latch_checks: cfg.is_category_enabled("inferred_latch"),
+        truncation_checks: cfg.check_truncation && cfg.is_category_enabled("width_truncation"),
+        multi_driver_checks: cfg.is_category_enabled("multi_driven"),
+        allow_comb_loops: cfg.is_category_enabled("comb_loop"),
     };
     let mut m = compile_to_ir_with_options(compile, inst)?;
 
     let mut findings = Vec::new();
 
-    // 0. Structural clock-used-as-data check (MUST run BEFORE clk2fflogic!).
-    let clock_sigs: HashSet<SignalId> = m
-        .signals
-        .iter()
-        .filter(|s| s.is_clock)
-        .map(|s| s.id)
-        .chain(m.ffs.iter().filter_map(|f| f.clock.map(|c| c.signal)))
-        .collect();
-    if !clock_sigs.is_empty() {
-        let mut data_used_clocks: HashSet<SignalId> = HashSet::new();
-        for ca in &m.comb {
-            if !clock_sigs.contains(&ca.signal) {
-                collect_used_clocks(&m, ca.value, &clock_sigs, &mut data_used_clocks);
+    // 0a. Surface structural lints captured during Slang lowering (`comb_loop`, `multi_driven`).
+    let mut comb_loop_sigs: HashSet<String> = HashSet::new();
+    for lint in &m.lints {
+        if !cfg.is_category_enabled(&lint.category) {
+            continue;
+        }
+        if lint.category == "comb_loop" {
+            comb_loop_sigs.insert(lint.signal.clone());
+        }
+        findings.push(AutoCheckFinding {
+            category: lint.category.clone(),
+            name: lint.signal.clone(),
+            status: if lint.is_bug {
+                CheckStatus::Bug {
+                    step: 0,
+                    trace: Vec::new(),
+                }
+            } else {
+                CheckStatus::Warning(lint.message.clone())
+            },
+            detail: Some(lint.message.clone()),
+        });
+    }
+
+    // 0b. Structural clock-used-as-data check (MUST run BEFORE clk2fflogic!).
+    if cfg.is_category_enabled("clock_as_data") {
+        let clock_sigs: HashSet<SignalId> = m
+            .signals
+            .iter()
+            .filter(|s| s.is_clock)
+            .map(|s| s.id)
+            .chain(m.ffs.iter().filter_map(|f| f.clock.map(|c| c.signal)))
+            .collect();
+        if !clock_sigs.is_empty() {
+            let mut data_used_clocks: HashSet<SignalId> = HashSet::new();
+            for ca in &m.comb {
+                if !clock_sigs.contains(&ca.signal) {
+                    collect_used_clocks(&m, ca.value, &clock_sigs, &mut data_used_clocks);
+                }
             }
-        }
-        for ff in &m.ffs {
-            collect_used_clocks(&m, ff.next, &clock_sigs, &mut data_used_clocks);
-        }
-        for csid in data_used_clocks {
-            let cname = &m.signal(csid).name;
-            if !cname.starts_with('$') {
-                findings.push(AutoCheckFinding {
-                    category: "clock_as_data".into(),
-                    name: cname.clone(),
-                    status: CheckStatus::Warning(format!(
+            for ff in &m.ffs {
+                collect_used_clocks(&m, ff.next, &clock_sigs, &mut data_used_clocks);
+            }
+            for csid in data_used_clocks {
+                let cname = &m.signal(csid).name;
+                if !cname.starts_with('$') {
+                    let msg = format!(
                         "clock signal '{cname}' is referenced inside data/combinational logic"
-                    )),
-                });
+                    );
+                    findings.push(AutoCheckFinding {
+                        category: "clock_as_data".into(),
+                        name: cname.clone(),
+                        status: CheckStatus::Warning(msg.clone()),
+                        detail: Some(msg),
+                    });
+                }
             }
         }
     }
@@ -119,56 +236,102 @@ pub fn run_autocheck(
         .map(|c| c.signal)
         .chain(m.ffs.iter().map(|f| f.signal))
         .collect();
-    for s in &m.signals {
-        if matches!(s.kind, SignalKind::Output | SignalKind::Wire)
-            && !s.name.starts_with('$')
-            && !driven.contains(&s.id)
-        {
+    if cfg.is_category_enabled("undriven") {
+        for s in &m.signals {
+            if matches!(s.kind, SignalKind::Output | SignalKind::Wire)
+                && !s.name.starts_with('$')
+                && !driven.contains(&s.id)
+                && !comb_loop_sigs.contains(&s.name)
+            {
+                let msg = format!("signal '{}' has no driver", s.name);
+                findings.push(AutoCheckFinding {
+                    category: "undriven".into(),
+                    name: s.name.clone(),
+                    status: CheckStatus::Warning(msg.clone()),
+                    detail: Some(msg),
+                });
+            }
+        }
+    }
+
+    // 1b. Optional unread/dead driven signal lint.
+    if cfg.check_unread && cfg.is_category_enabled("unread_signal") {
+        for sname in find_unread_signals(&m, &driven) {
+            let msg = format!(
+                "driven internal signal '{sname}' never reaches any output, memory, or property"
+            );
             findings.push(AutoCheckFinding {
-                category: "undriven".into(),
-                name: s.name.clone(),
-                status: CheckStatus::Warning(format!("signal '{}' has no driver", s.name)),
+                category: "unread_signal".into(),
+                name: sname,
+                status: CheckStatus::Warning(msg.clone()),
+                detail: Some(msg),
             });
         }
     }
 
-    // 2. Check each auto-generated assertion independently (with COI pruning!).
-    let auto_asserts: Vec<Property> = m
+    // 2. Check each auto-generated formal assertion in parallel with COI pruning + sequential sweeping!
+    let auto_asserts: Vec<(String, Property)> = m
         .properties
         .iter()
         .filter(|p| p.kind == PropertyKind::Assert && p.name.starts_with("autocheck_"))
-        .cloned()
+        .map(|p| (classify_autocheck_prop(&p.name).to_string(), p.clone()))
+        .filter(|(cat, _)| cfg.is_category_enabled(cat))
         .collect();
 
-    for prop in auto_asserts {
-        let category = if prop.name.contains("oob_mem") {
-            "oob_memory"
-        } else if prop.name.contains("div_by_zero") {
-            "div_by_zero"
-        } else if prop.name.contains("shift_overflow") {
-            "shift_overflow"
-        } else if prop.name.contains("overflow") {
-            "overflow"
-        } else {
-            "unique_priority"
-        }
-        .to_string();
+    if !auto_asserts.is_empty() {
+        let n_checks = auto_asserts.len();
+        let workers = thread::available_parallelism()
+            .map(|n| n.get().clamp(1, 4))
+            .unwrap_or(2)
+            .min(n_checks);
+        let cursor = AtomicUsize::new(0);
+        let results: Mutex<Vec<(usize, Result<AutoCheckFinding>)>> =
+            Mutex::new(Vec::with_capacity(n_checks));
 
-        let mut sub = m.clone();
-        sub.properties.retain(|p| p.kind == PropertyKind::Assume);
-        sub.properties.push(prop.clone());
-        vf_ir::passes::coi_prune(&mut sub);
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                let m_ref = &m;
+                let cfg_ref = cfg;
+                let asserts_ref = &auto_asserts;
+                let cursor_ref = &cursor;
+                let results_ref = &results;
+                scope.spawn(move || loop {
+                    let idx = cursor_ref.fetch_add(1, Ordering::Relaxed);
+                    if idx >= asserts_ref.len() {
+                        break;
+                    }
+                    let (ref category, ref prop) = asserts_ref[idx];
+                    let mut sub = m_ref.clone();
+                    sub.properties.retain(|p| p.kind == PropertyKind::Assume);
+                    sub.properties.push(prop.clone());
+                    vf_ir::passes::coi_prune(&mut sub);
+                    vf_ir::opt::sweep_sequential(&mut sub);
+                    vf_ir::passes::coi_prune(&mut sub);
 
-        let status = verify_single_assert(&sub, cfg)?;
-        findings.push(AutoCheckFinding {
-            category,
-            name: prop.name,
-            status,
+                    let finding = verify_single_assert(&sub, cfg_ref).map(|status| {
+                        AutoCheckFinding {
+                            category: category.clone(),
+                            name: prop.name.clone(),
+                            status,
+                            detail: None,
+                        }
+                    });
+                    if let Ok(mut guard) = results_ref.lock() {
+                        guard.push((idx, finding));
+                    }
+                });
+            }
         });
+
+        let mut ordered = results.into_inner().unwrap_or_default();
+        ordered.sort_by_key(|(idx, _)| *idx);
+        for (_, res) in ordered {
+            findings.push(res?);
+        }
     }
 
     // 3. Optional constant-stuck register check: prove if any initialized user FF can never change.
-    if cfg.check_const_regs {
+    if cfg.check_const_regs && cfg.is_category_enabled("const_reg") {
         for ff in &m.ffs {
             let s = m.signal(ff.signal);
             if s.name.starts_with('$') || s.is_clock {
@@ -196,48 +359,279 @@ pub fn run_autocheck(
                         solver: cfg.solver.clone(),
                     },
                 ) {
+                    let msg = format!(
+                        "register '{}' is provably stuck constant at {}'b{}",
+                        s.name, init.width, init.bits
+                    );
                     findings.push(AutoCheckFinding {
                         category: "const_reg".into(),
                         name: s.name.clone(),
-                        status: CheckStatus::Warning(format!(
-                            "register '{}' is provably stuck constant at {}'b{}",
-                            s.name, init.width, init.bits
-                        )),
+                        status: CheckStatus::Warning(msg.clone()),
+                        detail: Some(msg),
                     });
                 }
             }
         }
     }
 
-    // 4. FSM analysis (deadlock, livelock, and unreachable declared states) for each `--fsm`.
-    for fsm_name in &cfg.fsm_signals {
+    // 3b. Optional formal unresettable register check (`no_reset_reg`).
+    if cfg.check_no_reset && cfg.is_category_enabled("no_reset_reg") {
+        findings.extend(check_unresettable_regs(&m, cfg)?);
+    }
+
+    // 4. FSM analysis (deadlock, livelock, and unreachable declared states) for explicit `--fsm` and optional `--auto-fsm`.
+    let mut fsm_targets: Vec<String> = cfg.fsm_signals.clone();
+    if cfg.auto_fsm {
+        for cand in discover_fsm_candidates(&m) {
+            if !fsm_targets.contains(&cand) {
+                fsm_targets.push(cand);
+            }
+        }
+    }
+    for fsm_name in &fsm_targets {
         if let Some(sig) = m.find_signal(fsm_name) {
             if let Some(ff) = m.ffs.iter().find(|f| f.signal == sig).cloned() {
-                let dl_status = check_fsm_deadlock(&m, sig, ff.next, cfg)?;
-                findings.push(AutoCheckFinding {
-                    category: "fsm_deadlock".into(),
-                    name: fsm_name.clone(),
-                    status: dl_status,
-                });
+                if cfg.is_category_enabled("fsm_deadlock") {
+                    let dl_status = check_fsm_deadlock(&m, sig, ff.next, cfg)?;
+                    findings.push(AutoCheckFinding {
+                        category: "fsm_deadlock".into(),
+                        name: fsm_name.clone(),
+                        status: dl_status,
+                        detail: None,
+                    });
+                }
 
                 let declared_states = extract_fsm_states(&m, sig, ff.next);
                 if !declared_states.is_empty() {
-                    let unreach = check_fsm_unreachable(&m, sig, fsm_name, &declared_states, cfg)?;
-                    findings.extend(unreach);
+                    if cfg.is_category_enabled("fsm_unreachable") {
+                        let unreach =
+                            check_fsm_unreachable(&m, sig, fsm_name, &declared_states, cfg)?;
+                        findings.extend(unreach);
+                    }
 
-                    let ll_status =
-                        check_fsm_livelock(&m, sig, ff.next, ff.init.as_ref(), &declared_states, cfg)?;
-                    findings.push(AutoCheckFinding {
-                        category: "fsm_livelock".into(),
-                        name: fsm_name.clone(),
-                        status: ll_status,
-                    });
+                    if cfg.is_category_enabled("fsm_livelock") {
+                        let ll_status = check_fsm_livelock(
+                            &m,
+                            sig,
+                            ff.next,
+                            ff.init.as_ref(),
+                            &declared_states,
+                            cfg,
+                        )?;
+                        findings.push(AutoCheckFinding {
+                            category: "fsm_livelock".into(),
+                            name: fsm_name.clone(),
+                            status: ll_status,
+                            detail: None,
+                        });
+                    }
                 }
             }
         }
     }
 
     Ok((m, findings))
+}
+
+fn classify_autocheck_prop(name: &str) -> &'static str {
+    if name.contains("oob_mem") {
+        "oob_memory"
+    } else if name.contains("oob_bitselect") {
+        "oob_bitselect"
+    } else if name.contains("div_by_zero") {
+        "div_by_zero"
+    } else if name.contains("shift_overflow") {
+        "shift_overflow"
+    } else if name.contains("inferred_latch") {
+        "inferred_latch"
+    } else if name.contains("width_truncation") {
+        "width_truncation"
+    } else if name.contains("overflow") {
+        "overflow"
+    } else {
+        "unique_priority"
+    }
+}
+
+/// Automatically discover FSM state register candidates (small-width FFs whose name hints at
+/// FSM/state/mode OR that are compared against >= 2 distinct constants in equality checks).
+pub fn discover_fsm_candidates(m: &Module) -> Vec<String> {
+    let mut out = Vec::new();
+    for ff in &m.ffs {
+        let s = m.signal(ff.signal);
+        if s.name.starts_with('$') || s.is_clock || s.width > 8 {
+            continue;
+        }
+        let low = s.name.to_ascii_lowercase();
+        let name_hint = low.contains("state")
+            || low.contains("fsm")
+            || low.ends_with("_st")
+            || low == "st"
+            || low == "mode";
+        let mut const_cmps: HashSet<String> = HashSet::new();
+        for node in &m.exprs {
+            if let ExprKind::Eq(a, b) = &node.kind {
+                match (&m.expr(*a).kind, &m.expr(*b).kind) {
+                    (ExprKind::Signal(sig), ExprKind::Const(c))
+                    | (ExprKind::Const(c), ExprKind::Signal(sig))
+                        if *sig == ff.signal && c.width == s.width =>
+                    {
+                        const_cmps.insert(c.bits.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if name_hint || const_cmps.len() >= 2 {
+            out.push(s.name.clone());
+        }
+    }
+    out
+}
+
+/// Find driven internal wires/registers that never appear in the backward cone of influence
+/// of any output port, memory write, or user property.
+fn find_unread_signals(m: &Module, driven: &HashSet<SignalId>) -> Vec<String> {
+    let comb_map: std::collections::HashMap<SignalId, ExprId> =
+        m.comb.iter().map(|c| (c.signal, c.value)).collect();
+    let ff_map: std::collections::HashMap<SignalId, usize> = m
+        .ffs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.signal, i))
+        .collect();
+
+    let mut live: HashSet<SignalId> = HashSet::new();
+    let mut worklist: Vec<SignalId> = Vec::new();
+    let enqueue_expr = |eid: ExprId, live: &mut HashSet<SignalId>, wl: &mut Vec<SignalId>| {
+        let mut deps = Vec::new();
+        collect_signals(m, eid, &mut deps);
+        for d in deps {
+            if live.insert(d) {
+                wl.push(d);
+            }
+        }
+    };
+
+    for s in &m.signals {
+        if s.kind == SignalKind::Output && live.insert(s.id) {
+            worklist.push(s.id);
+        }
+    }
+    for mw in &m.mem_writes {
+        enqueue_expr(mw.addr, &mut live, &mut worklist);
+        enqueue_expr(mw.data, &mut live, &mut worklist);
+        enqueue_expr(mw.enable, &mut live, &mut worklist);
+    }
+    for p in &m.properties {
+        if !p.name.starts_with("autocheck_") {
+            enqueue_expr(p.cond, &mut live, &mut worklist);
+            enqueue_expr(p.en, &mut live, &mut worklist);
+        }
+    }
+
+    while let Some(sig) = worklist.pop() {
+        if let Some(&val) = comb_map.get(&sig) {
+            enqueue_expr(val, &mut live, &mut worklist);
+        }
+        if let Some(&fi) = ff_map.get(&sig) {
+            let ff = &m.ffs[fi];
+            enqueue_expr(ff.next, &mut live, &mut worklist);
+            if let Some(ar) = &ff.async_reset {
+                enqueue_expr(ar.cond, &mut live, &mut worklist);
+                enqueue_expr(ar.reset_val, &mut live, &mut worklist);
+            }
+        }
+    }
+
+    let mut unread = Vec::new();
+    for s in &m.signals {
+        if !s.name.starts_with('$')
+            && !s.is_clock
+            && matches!(s.kind, SignalKind::Wire | SignalKind::Reg)
+            && driven.contains(&s.id)
+            && !live.contains(&s.id)
+        {
+            unread.push(s.name.clone());
+        }
+    }
+    unread
+}
+
+/// Detect standard reset input (`rst`/`rst_n`/`reset`/`reset_n`/`presetn`) and formally check
+/// whether any uninitialized user FF fails to be cleared to a fixed value when reset is active.
+fn check_unresettable_regs(m: &Module, cfg: &AutoCheckConfig) -> Result<Vec<AutoCheckFinding>> {
+    use vf_smt::smt2;
+    use vf_smt::solver::{SatResult, SmtSolver};
+
+    let rst_info: Option<(SignalId, String, bool)> =
+        ["rst", "rst_n", "reset", "reset_n", "presetn"]
+            .iter()
+            .find_map(|name| {
+                m.find_signal(name).and_then(|sid| {
+                    if m.signal(sid).kind == SignalKind::Input && m.signal(sid).width == 1 {
+                        let low = name.ends_with("_n") || name.ends_with("resetn");
+                        Some((sid, (*name).to_string(), low))
+                    } else {
+                        None
+                    }
+                })
+            });
+
+    let Some((rst_sig, rst_name, active_low)) = rst_info else {
+        return Ok(Vec::new());
+    };
+    let active_val = if active_low { "#b0" } else { "#b1" };
+
+    let mut out = Vec::new();
+    for ff in &m.ffs {
+        let s = m.signal(ff.signal);
+        if s.name.starts_with('$') || s.is_clock || ff.init.is_some() || ff.async_reset.is_some() {
+            continue;
+        }
+        // Check if both (cur == 0 && next == 0) and (cur == 1 && next == 1) are SAT under reset active.
+        // Any FF reset to a constant C will make at least one of these UNSAT!
+        let mut holds_zero = false;
+        let mut holds_one = false;
+        let w = s.width;
+        let c0 = ConstBits::zero(w);
+        let c1 = ConstBits::one(w);
+
+        for (target_c, slot) in [(&c0, &mut holds_zero), (&c1, &mut holds_one)] {
+            let mut solver = SmtSolver::spawn(&cfg.solver)?;
+            solver.send(&smt2::header(m))?;
+            solver.send(&smt2::encode_step(m, 0, false, None))?;
+            solver.send(&smt2::encode_assumes(m, 0))?;
+            solver.send(&smt2::encode_step(m, 1, false, Some(0)))?;
+            solver.send(&format!(
+                "(assert (= {} {active_val}))\n",
+                smt2::sig_name(rst_sig, 0)
+            ))?;
+            let tc = smt2::smt_const(target_c);
+            solver.send(&format!(
+                "(assert (= {} {tc}))\n(assert (= {} {tc}))\n",
+                smt2::sig_name(ff.signal, 0),
+                smt2::sig_name(ff.signal, 1)
+            ))?;
+            if solver.check_sat()? == SatResult::Sat {
+                *slot = true;
+            }
+        }
+
+        if holds_zero && holds_one {
+            let msg = format!(
+                "uninitialized register '{}' is not cleared when reset '{rst_name}' is active",
+                s.name
+            );
+            out.push(AutoCheckFinding {
+                category: "no_reset_reg".into(),
+                name: s.name.clone(),
+                status: CheckStatus::Warning(msg.clone()),
+                detail: Some(msg),
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn collect_used_clocks(
@@ -418,12 +812,14 @@ fn check_fsm_unreachable(
                     .to_u64()
                     .map(|v| format!("{v}"))
                     .unwrap_or_else(|| format!("{}'b{}", st.width, st.bits));
+                let msg = format!(
+                    "declared FSM state '{fsm_name} == {label}' is formally unreachable"
+                );
                 out.push(AutoCheckFinding {
                     category: "fsm_unreachable".into(),
                     name: format!("{fsm_name}=={label}"),
-                    status: CheckStatus::Warning(format!(
-                        "declared FSM state '{fsm_name} == {label}' is formally unreachable"
-                    )),
+                    status: CheckStatus::Warning(msg.clone()),
+                    detail: Some(msg),
                 });
             }
         }
@@ -434,6 +830,7 @@ fn check_fsm_unreachable(
             category: "fsm_unreachable".into(),
             name: fsm_name.to_string(),
             status: CheckStatus::Safe,
+            detail: None,
         });
     }
 
@@ -666,6 +1063,19 @@ fn check_fsm_deadlock(
         .filter(|s| s.kind == SignalKind::Input && !s.is_clock)
         .collect();
 
+    let rst_info: Option<(SignalId, bool)> = ["rst", "rst_n", "reset", "reset_n", "presetn"]
+        .iter()
+        .find_map(|name| {
+            m.find_signal(name).and_then(|sid| {
+                if m.signal(sid).kind == SignalKind::Input && m.signal(sid).width == 1 {
+                    let low = name.ends_with("_n") || name.ends_with("resetn");
+                    Some((sid, low))
+                } else {
+                    None
+                }
+            })
+        });
+
     let mut solver = SmtSolver::spawn(&cfg.solver)?;
     solver.send("(set-logic ALL)\n(set-option :produce-models true)\n")?;
 
@@ -713,6 +1123,13 @@ fn check_fsm_deadlock(
                                 smt2::smt_const(v)
                             ))?;
                         }
+                    }
+                    if let Some((rsid, active_low)) = rst_info {
+                        let inactive = if active_low { "#b1" } else { "#b0" };
+                        escape.send(&format!(
+                            "(assert (= {} {inactive}))\n",
+                            smt2::sig_name(rsid, 0)
+                        ))?;
                     }
                     escape.send(&format!(
                         "(assert (= {} #b0))\n",

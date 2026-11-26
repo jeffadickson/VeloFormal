@@ -24,7 +24,7 @@ use vf_apps::regcheck::{
 use vf_apps::secure::{run_secure_check, SecureConfig, SecureOutcome};
 use vf_apps::xcheck::{run_xcheck, XCheckConfig, XStatus};
 use vf_dsl::{emit_sva, format_contract, lower_contract_to_ir, parse_contract, ContractRole};
-use vf_engine::backtrace::compute_cex_backtrace;
+use vf_engine::backtrace::{compute_cex_backtrace, format_agent_trace_table};
 use vf_engine::bmc::{run_bmc, BmcConfig, BmcOutcome};
 use vf_engine::cert::ProofCertificate;
 use vf_engine::cover::{run_cover, CoverConfig};
@@ -272,22 +272,55 @@ enum Commands {
         #[arg(long)]
         vcd: Option<PathBuf>,
     },
-    /// Questa AutoCheck: push-button formal RTL bug hunting (OOB memory, div-by-zero, shift-overflow, unique/priority, overflow, FSM deadlock/livelock/unreachable, clock-as-data)
+    /// Questa AutoCheck / Jasper Superlint: push-button formal RTL bug hunting (OOB memory/bit-select, div-by-zero, shift-overflow, unique/priority, inferred latches, comb loops, multi-drivers, signed/unsigned/mul overflow, width truncation, FSM deadlock/livelock/unreachable, clock-as-data, unresettable/const/unread regs)
     Autocheck {
         #[command(flatten)]
         src: SourceArgs,
         /// Maximum verification depth
         #[arg(long, default_value_t = 15)]
         depth: usize,
-        /// Enable unsigned arithmetic overflow/underflow checks
+        /// Enable signed & unsigned add/sub/mul arithmetic overflow/underflow checks
         #[arg(long)]
         check_overflow: bool,
+        /// Enable formal implicit width-truncation / silent data-loss checks
+        #[arg(long)]
+        check_truncation: bool,
         /// Check for initialized registers provably stuck constant forever
         #[arg(long)]
         check_const_regs: bool,
+        /// Check formally for uninitialized registers not cleared by detected reset input
+        #[arg(long)]
+        check_no_reset: bool,
+        /// Check for driven internal signals never read by any output, memory, or property
+        #[arg(long)]
+        check_unread: bool,
+        /// Automatically discover FSM state registers and run deadlock/livelock/unreachable checks
+        #[arg(long)]
+        auto_fsm: bool,
+        /// Strict mode: enable all opt-in checks (overflow, truncation, const-reg, no-reset, unread, auto-FSM)
+        #[arg(long)]
+        strict: bool,
         /// FSM state register name(s) to check for deadlock, livelock, and unreachable states
         #[arg(long = "fsm")]
         fsm_signals: Vec<String>,
+        /// Only run specific AutoCheck category/categories (repeatable)
+        #[arg(long = "enable")]
+        enable_categories: Vec<String>,
+        /// Skip/waive specific AutoCheck category/categories (repeatable)
+        #[arg(long = "disable")]
+        disable_categories: Vec<String>,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Write unified HTML or JSON sign-off report
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Write SARIF 2.1.0 report for GitHub Code Scanning
+        #[arg(long)]
+        sarif: Option<PathBuf>,
+        /// Write JUnit XML report
+        #[arg(long)]
+        junit: Option<PathBuf>,
         /// SMT solver executable
         #[arg(long, default_value = "z3")]
         solver: String,
@@ -1099,47 +1132,200 @@ fn run() -> Result<ExitCode> {
             src,
             depth,
             check_overflow,
+            check_truncation,
             check_const_regs,
+            check_no_reset,
+            check_unread,
+            auto_fsm,
+            strict,
             fsm_signals,
+            enable_categories,
+            disable_categories,
+            format,
+            report: report_path,
+            sarif: sarif_path,
+            junit: junit_path,
             solver,
             vcd_dir,
         } => {
-            let (module, findings) = run_autocheck(
-                &src.to_compile_options(),
-                &AutoCheckConfig {
-                    depth,
-                    solver,
-                    check_overflow,
-                    check_const_regs,
-                    fsm_signals,
-                    use_pdr: true,
-                },
-            )?;
+            let mut cfg = if strict {
+                AutoCheckConfig::strict()
+            } else {
+                AutoCheckConfig::default()
+            };
+            cfg.depth = depth;
+            cfg.solver = solver;
+            cfg.check_overflow |= check_overflow;
+            cfg.check_truncation |= check_truncation;
+            cfg.check_const_regs |= check_const_regs;
+            cfg.check_no_reset |= check_no_reset;
+            cfg.check_unread |= check_unread;
+            cfg.auto_fsm |= auto_fsm;
+            cfg.fsm_signals = fsm_signals;
+            cfg.enabled_categories = enable_categories;
+            cfg.disabled_categories = disable_categories;
+
+            let (module, findings) = run_autocheck(&src.to_compile_options(), &cfg)?;
             if let Some(dir) = &vcd_dir {
                 fs::create_dir_all(dir)?;
             }
+
             let mut any_bug = false;
+            let mut signoff = SignOffReport::new("VeloFormal AutoCheck Sign-Off", &module.name);
+            let mut json_findings = Vec::with_capacity(findings.len());
+
             for (i, f) in findings.iter().enumerate() {
                 match &f.status {
                     CheckStatus::Safe => {
-                        println!("SAFE [{}] `{}`", f.category, f.name);
+                        if format != "json" {
+                            println!("SAFE [{}] `{}`", f.category, f.name);
+                        }
+                        signoff.items.push(ReportItem {
+                            name: f.name.clone(),
+                            category: format!("autocheck:{}", f.category),
+                            status: "SAFE".into(),
+                            engine: "autocheck".into(),
+                            detail: f.detail.clone().unwrap_or_else(|| "proved safe".into()),
+                            source: None,
+                            trace: None,
+                        });
+                        json_findings.push(serde_json::json!({
+                            "category": f.category,
+                            "name": f.name,
+                            "status": "SAFE",
+                            "detail": f.detail,
+                        }));
                     }
                     CheckStatus::Bug { step, trace } => {
-                        println!("BUG  [{}] `{}` violated at cycle {step}", f.category, f.name);
-                        if let Some(dir) = &vcd_dir {
-                            let path = dir.join(format!("autocheck_{i}.vcd"));
-                            fs::write(&path, vcd::write_vcd(&module, trace))?;
-                        }
                         any_bug = true;
+                        let msg = if let Some(d) = &f.detail {
+                            d.clone()
+                        } else {
+                            format!("violated at cycle {step}")
+                        };
+                        if format != "json" {
+                            if trace.is_empty() {
+                                println!("BUG  [{}] `{}` — {msg}", f.category, f.name);
+                            } else {
+                                println!("BUG  [{}] `{}` violated at cycle {step}", f.category, f.name);
+                            }
+                        }
+                        if let Some(dir) = &vcd_dir {
+                            if !trace.is_empty() {
+                                let path = dir.join(format!("autocheck_{i}.vcd"));
+                                fs::write(&path, vcd::write_vcd(&module, trace))?;
+                            }
+                        }
+                        signoff.items.push(ReportItem {
+                            name: f.name.clone(),
+                            category: format!("autocheck:{}", f.category),
+                            status: "BUG".into(),
+                            engine: "autocheck".into(),
+                            detail: msg.clone(),
+                            source: None,
+                            trace: if trace.is_empty() {
+                                None
+                            } else {
+                                Some(trace.clone())
+                            },
+                        });
+                        let trace_table = if trace.is_empty() {
+                            None
+                        } else {
+                            Some(format_agent_trace_table(&module, None, trace, 10))
+                        };
+                        json_findings.push(serde_json::json!({
+                            "category": f.category,
+                            "name": f.name,
+                            "status": "BUG",
+                            "step": step,
+                            "detail": msg,
+                            "trace_table": trace_table,
+                        }));
                     }
                     CheckStatus::Warning(msg) => {
-                        println!("WARN [{}] `{}` — {msg}", f.category, f.name);
+                        if format != "json" {
+                            println!("WARN [{}] `{}` — {msg}", f.category, f.name);
+                        }
+                        signoff.items.push(ReportItem {
+                            name: f.name.clone(),
+                            category: format!("autocheck:{}", f.category),
+                            status: "WARN".into(),
+                            engine: "autocheck".into(),
+                            detail: msg.clone(),
+                            source: None,
+                            trace: None,
+                        });
+                        json_findings.push(serde_json::json!({
+                            "category": f.category,
+                            "name": f.name,
+                            "status": "WARN",
+                            "detail": msg,
+                        }));
                     }
                     CheckStatus::Unknown => {
-                        println!("UNKNOWN [{}] `{}`", f.category, f.name);
+                        if format != "json" {
+                            println!("UNKNOWN [{}] `{}`", f.category, f.name);
+                        }
+                        signoff.items.push(ReportItem {
+                            name: f.name.clone(),
+                            category: format!("autocheck:{}", f.category),
+                            status: "UNKNOWN".into(),
+                            engine: "autocheck".into(),
+                            detail: "inconclusive".into(),
+                            source: None,
+                            trace: None,
+                        });
+                        json_findings.push(serde_json::json!({
+                            "category": f.category,
+                            "name": f.name,
+                            "status": "UNKNOWN",
+                        }));
                     }
                 }
             }
+
+            if let Some(rp) = &report_path {
+                let content = if rp.extension().and_then(|e| e.to_str()) == Some("json") {
+                    signoff.to_json()
+                } else {
+                    signoff.to_html()
+                };
+                fs::write(rp, content)?;
+            }
+            if let Some(sp) = &sarif_path {
+                fs::write(sp, signoff.to_sarif())?;
+            }
+            if let Some(jp) = &junit_path {
+                fs::write(jp, signoff.to_junit_xml())?;
+            }
+
+            if format == "json" {
+                let bugs = findings
+                    .iter()
+                    .filter(|f| matches!(f.status, CheckStatus::Bug { .. }))
+                    .count();
+                let warnings = findings
+                    .iter()
+                    .filter(|f| matches!(f.status, CheckStatus::Warning(_)))
+                    .count();
+                let safe = findings
+                    .iter()
+                    .filter(|f| matches!(f.status, CheckStatus::Safe))
+                    .count();
+                let out = serde_json::json!({
+                    "module": module.name,
+                    "summary": {
+                        "total": findings.len(),
+                        "safe": safe,
+                        "bugs": bugs,
+                        "warnings": warnings,
+                    },
+                    "findings": json_findings,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+
             Ok(if any_bug {
                 ExitCode::from(1)
             } else {
